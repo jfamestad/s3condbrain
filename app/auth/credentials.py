@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import boto3
 
 
-class Shape(str, Enum):
+class Shape(StrEnum):
     """Session-policy shapes (§8.5 table)."""
 
     READ = "read"  # GetObject, GetObjectVersion, kms:Decrypt

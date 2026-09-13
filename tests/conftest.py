@@ -54,9 +54,7 @@ def bucket(aws: None, settings: Settings):
         Bucket=settings.bucket,
         CreateBucketConfiguration={"LocationConstraint": os.environ["AWS_DEFAULT_REGION"]},
     )
-    s3.put_bucket_versioning(
-        Bucket=settings.bucket, VersioningConfiguration={"Status": "Enabled"}
-    )
+    s3.put_bucket_versioning(Bucket=settings.bucket, VersioningConfiguration={"Status": "Enabled"})
     return s3
 
 

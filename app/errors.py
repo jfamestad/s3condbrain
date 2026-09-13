@@ -22,7 +22,9 @@ class HttpError(Exception):
         headers: Extra response headers.
     """
 
-    def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, status: int, body: Any = None, headers: dict[str, str] | None = None
+    ) -> None:
         super().__init__(f"HTTP {status}")
         self.status = status
         self.body = body if body is not None else {"error": "request refused"}

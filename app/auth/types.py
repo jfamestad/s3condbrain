@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class Permission(str, Enum):
+class Permission(StrEnum):
     """Three verbs. ``own`` implies ``write`` implies ``read`` (§4.5)."""
 
     READ = "read"

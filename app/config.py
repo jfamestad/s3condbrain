@@ -64,9 +64,8 @@ class Settings:
         """
         authkit = _env("AUTHKIT_DOMAIN").rstrip("/")
         mcp_url = _env("CANONICAL_MCP_URL")
-        origins = tuple(
-            o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "https://claude.ai").split(",") if o.strip()
-        )
+        raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://claude.ai")
+        origins = tuple(o.strip() for o in raw_origins.split(",") if o.strip())
         return cls(
             bucket=_env("WIKI_BUCKET", ""),
             grant_table=_env("GRANT_TABLE", ""),
@@ -78,7 +77,7 @@ class Settings:
             resource_metadata_url=os.environ.get("RESOURCE_METADATA_URL")
             or mcp_url.replace("/mcp", "/.well-known/oauth-protected-resource/mcp"),
             allowed_origins=origins,
-            credential_cache_seconds=int(os.environ.get("CREDENTIAL_CACHE_SECONDS", "900")),
+            credential_cache_seconds=int(os.environ.get("CREDENTIAL_CACHE_SECONDS") or "900"),
             strict_mcp_headers=os.environ.get("MCP_STRICT_HEADERS", "false").lower() == "true",
             protocol_version=os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
