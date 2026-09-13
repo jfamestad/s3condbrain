@@ -3,6 +3,7 @@ ENV ?= dev
 PY_VERSION := 3.13
 LAMBDA_PLATFORM := aarch64-manylinux2014
 BUILD := build
+CDK ?= npx cdk
 
 .PHONY: help sync test lint typecheck build synth deploy destroy security aws-tests clean grant-owner
 
@@ -37,13 +38,13 @@ build: ## Package both Lambda functions for arm64 / py$(PY_VERSION)
 	find $(BUILD) -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 synth: build ## cdk synth for ENV (default dev)
-	uv run cdk synth -c env=$(ENV)
+	$(CDK) synth -c env=$(ENV)
 
 deploy: build ## cdk deploy all stacks for ENV
-	uv run cdk deploy -c env=$(ENV) --all --require-approval never
+	$(CDK) deploy -c env=$(ENV) --all --require-approval never
 
 destroy: ## cdk destroy for ENV (dev only — prod buckets are retained)
-	uv run cdk destroy -c env=$(ENV) --all
+	$(CDK) destroy -c env=$(ENV) --all
 
 security: ## §12.8 checks against a deployed instance (WIKI_BASE_URL required)
 	uv run pytest -m security -o addopts=""
