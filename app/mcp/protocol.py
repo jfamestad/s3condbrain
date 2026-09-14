@@ -6,11 +6,13 @@ Owned by the scaffold. Neither side changes these shapes without the other.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.auth.credentials import CredentialMinter
 from app.auth.grants import GrantStore
+from app.auth.ratelimit import RateLimiter
+from app.auth.types import Resolution
 from app.config import Settings
 
 # JSON-RPC error codes (HANDOFF §6.2)
@@ -27,6 +29,23 @@ H_METHOD = "mcp-method"
 H_NAME = "mcp-name"
 
 
+@dataclass
+class AuditTrail:
+    """What a tool call depended on, for the §12.7 / AS-10 audit line.
+
+    Tools call ``ToolContext.note`` with each grant resolution they relied on; the
+    transport reads ``grants_used`` after the handler returns.
+    """
+
+    grants_used: list[tuple[str, str]] = field(default_factory=list)
+
+    def note(self, resolution: Resolution) -> None:
+        for g in resolution.grants_used:
+            pair = (g.node, g.permission.value)
+            if pair not in self.grants_used:
+                self.grants_used.append(pair)
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """Everything a tool handler may use. Identity comes from the validated token
@@ -41,6 +60,8 @@ class ToolContext:
         settings: Runtime settings.
         request_id: Gateway request id for logging.
         log: Powertools logger (or any object with ``info``/``warning``/``error``).
+        limiter: Per-subject rate limiter (§12.6); a no-op when unconfigured.
+        audit: Mutable trail of the grants this call depended on (AS-10).
     """
 
     subject: str
@@ -50,6 +71,15 @@ class ToolContext:
     settings: Settings
     request_id: str = ""
     log: Any = None
+    limiter: RateLimiter | None = None
+    audit: AuditTrail = field(default_factory=AuditTrail)
+
+    def require(self, path: str, needed: Any) -> Resolution:
+        """``grants.require`` that also records the grants used. Tools should call
+        this rather than ``ctx.grants.require`` directly."""
+        resolution = self.grants.require(self.subject, path, needed)
+        self.audit.note(resolution)
+        return resolution
 
     @property
     def actor(self) -> str:
@@ -96,6 +126,7 @@ class Tool:
 
 
 __all__ = [
+    "AuditTrail",
     "HEADER_MISMATCH",
     "H_METHOD",
     "H_NAME",

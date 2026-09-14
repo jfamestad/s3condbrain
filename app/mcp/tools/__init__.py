@@ -1,7 +1,7 @@
 """Tool registry. Each tool module exposes a module-level ``TOOL: Tool``.
 
-Skeleton scope (HANDOFF §11.4): create_article, read_article, list_folder,
-update_article. Later increments append to ``_MODULES`` only.
+All eleven tools of HANDOFF §10, in the table's order. A module that is not yet
+implemented ships a placeholder whose handler returns a 500 envelope.
 """
 
 from __future__ import annotations
@@ -11,10 +11,17 @@ import importlib
 from app.mcp.protocol import Tool
 
 _MODULES = (
-    "create_article",
-    "read_article",
+    "search",
     "list_folder",
+    "read_article",
+    "resolve_reference",
+    "list_versions",
+    "read_version",
+    "create_article",
     "update_article",
+    "move_article",
+    "archive_article",
+    "unarchive_article",
 )
 
 

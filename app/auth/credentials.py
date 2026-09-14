@@ -43,6 +43,7 @@ class Shape(StrEnum):
     READ = "read"  # GetObject, GetObjectVersion, kms:Decrypt
     LIST = "list"  # READ + ListBucket with s3:prefix condition
     WRITE = "write"  # READ + PutObject, kms:GenerateDataKey
+    MAINTAIN = "maintain"  # WRITE + LIST + PutObjectTagging, for folder listing upkeep (§8.6)
 
 
 def _normalise(path: str) -> str:

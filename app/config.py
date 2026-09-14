@@ -54,6 +54,16 @@ class Settings:
     strict_mcp_headers: bool = False
     protocol_version: str = "2026-07-28"
     log_level: str = "INFO"
+    # Increment D — rate limits (§12.6). Empty table name → no-op limiter.
+    ratelimit_table: str = ""
+    calls_per_minute: int = 60
+    writes_per_hour: int = 200
+    # Increment F — web application (§11.6). The web function is its own OAuth
+    # client of AuthKit; its secrets live in one Secrets Manager secret.
+    web_base_url: str = ""
+    workos_client_id: str = ""
+    web_secret_arn: str = ""
+    session_hours: int = 12
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -81,6 +91,13 @@ class Settings:
             strict_mcp_headers=os.environ.get("MCP_STRICT_HEADERS", "false").lower() == "true",
             protocol_version=os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
+            ratelimit_table=os.environ.get("RATELIMIT_TABLE", ""),
+            calls_per_minute=int(os.environ.get("CALLS_PER_MINUTE") or "60"),
+            writes_per_hour=int(os.environ.get("WRITES_PER_HOUR") or "200"),
+            web_base_url=os.environ.get("WEB_BASE_URL", ""),
+            workos_client_id=os.environ.get("WORKOS_CLIENT_ID", ""),
+            web_secret_arn=os.environ.get("WEB_SECRET_ARN", ""),
+            session_hours=int(os.environ.get("SESSION_HOURS") or "12"),
         )
 
 
@@ -92,3 +109,6 @@ ARTICLE_PREFIX = "a/"
 MAX_ARTICLE_BYTES = 1_048_576
 RESERVED_NAMES = frozenset({"index.md", "log.md"})
 RESERVED_TYPES = frozenset({"pointer", "archived"})
+LISTING_NAME = "_listing.json"
+LISTING_TAG = "wiki:listing=true"
+MAX_PATH_LENGTH = 512

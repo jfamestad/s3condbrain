@@ -21,7 +21,7 @@ separated), placed there by the authorizer. Missing → 401 challenge (defensive
 gateway should never route an unauthenticated POST here).
 
 One structured log line per tool call (§12.7): request_id · subject · tool · path ·
-decision · status · duration_ms · bytes. ``grants_used`` is not known at this layer.
+decision · status · grants_used · duration_ms · bytes.
 """
 
 from __future__ import annotations
@@ -37,7 +37,8 @@ from aws_lambda_powertools import Logger
 
 from app.auth.credentials import CredentialMinter
 from app.auth.grants import GrantStore
-from app.config import SCOPE_READ, Settings
+from app.auth.ratelimit import RateLimiter
+from app.config import SCOPE_READ, SCOPE_WRITE, Settings
 from app.errors import HttpError, InsufficientScope, ToolError
 from app.mcp import tools as tools_pkg
 from app.mcp.protocol import (
@@ -72,15 +73,17 @@ _settings: Settings | None = None
 _registry: dict[str, Tool] | None = None
 _grants: GrantStore | None = None
 _minter: CredentialMinter | None = None
+_limiter: RateLimiter | None = None
 
 
 def _reset() -> None:
     """Drop cached singletons (tests only)."""
-    global _settings, _registry, _grants, _minter
+    global _settings, _registry, _grants, _minter, _limiter
     _settings = None
     _registry = None
     _grants = None
     _minter = None
+    _limiter = None
 
 
 def _get_settings() -> Settings:
@@ -102,6 +105,17 @@ def _get_grants(settings: Settings) -> GrantStore:
     if _grants is None:
         _grants = GrantStore(settings.grant_table)
     return _grants
+
+
+def _get_limiter(settings: Settings) -> RateLimiter:
+    global _limiter
+    if _limiter is None:
+        _limiter = RateLimiter(
+            settings.ratelimit_table,
+            settings.calls_per_minute,
+            settings.writes_per_hour,
+        )
+    return _limiter
 
 
 def _get_minter(settings: Settings) -> CredentialMinter:
@@ -296,6 +310,8 @@ def _tools_call(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         raise InsufficientScope(tool.scope, ctx.settings.resource_metadata_url)
 
     try:
+        if ctx.limiter is not None:
+            ctx.limiter.check(ctx.subject, is_write=tool.scope == SCOPE_WRITE)
         result = tool.handler(ctx, arguments)
     except ToolError as err:
         return {
@@ -387,6 +403,7 @@ def build_context(event: dict[str, Any], settings: Settings) -> ToolContext:
         settings=settings,
         request_id=_request_id(event),
         log=logger,
+        limiter=_get_limiter(settings),
     )
 
 
@@ -427,6 +444,7 @@ def _log_call(
         path=path if isinstance(path, str) else "",
         decision=decision,
         status=status,
+        grants_used=[f"{node}:{perm}" for node, perm in ctx.audit.grants_used],
         duration_ms=round((time.perf_counter() - started) * 1000, 2),
         bytes=body_len,
     )

@@ -155,6 +155,49 @@ class ArticleStore:
             metadata=dict(response.get("Metadata") or {}),
         )
 
+    def get_version(self, s3: Any, path: str, version_id: str) -> StoredObject | None:
+        """``GetObject?versionId=``. ``None`` on 404 / NoSuchVersion.
+
+        Raises:
+            AccessDenied: on 403.
+        """
+        key = key_for(path)
+        try:
+            response = s3.get_object(Bucket=self.bucket, Key=key, VersionId=version_id)
+        except ClientError as error:
+            if _is_not_found(error) or _code(error) in ("NoSuchVersion", "InvalidArgument"):
+                return None
+            if _is_denied(error):
+                raise AccessDenied(path) from error
+            raise
+        body = response["Body"].read()
+        return StoredObject(
+            key=key,
+            etag=response["ETag"],
+            body=body,
+            size=int(response.get("ContentLength", len(body))),
+            version_id=response.get("VersionId"),
+            last_modified=response.get("LastModified"),
+            metadata=dict(response.get("Metadata") or {}),
+        )
+
+    def head_version(self, s3: Any, path: str, version_id: str) -> StoredObject | None:
+        """``HeadObject?versionId=`` — metadata for one historical version (§8.3).
+        Increment C implements this."""
+        raise NotImplementedError
+
+    def list_versions(
+        self, s3: Any, path: str, *, limit: int = 20, cursor: str | None = None
+    ) -> tuple[list[StoredObject], str | None]:
+        """``ListObjectVersions`` for exactly one key, newest first (§8.3, §10.7).
+
+        Returns ``(entries, next_cursor)``. Entries carry ``version_id``, ``etag``,
+        ``size``, ``last_modified`` and **no** metadata — callers ``head_version``
+        each entry for actor/kind. Delete markers are ignored (nothing writes them).
+        Increment C implements this.
+        """
+        raise NotImplementedError
+
     def head(self, s3: Any, path: str) -> StoredObject | None:
         """``HeadObject`` — etag and metadata only; ``None`` on 404.
 
