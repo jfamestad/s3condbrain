@@ -1,8 +1,11 @@
 """The web function's one secret (HANDOFF §12.3 "no secrets in files").
 
 One Secrets Manager JSON secret holds ``client_secret`` (the AuthKit confidential
-client), ``api_key`` (WorkOS management API, for creating users — increment E) and
-``session_key`` (cookie signing). Fetched once per container.
+client) and ``session_key`` (cookie signing). Fetched once per container.
+
+There is deliberately no WorkOS management API key here or anywhere (§11.6 "Adding a
+person"): people are created in the WorkOS dashboard, and the console only records
+them. The client secret can do nothing but exchange this client's own login codes.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ import boto3
 @dataclass(frozen=True)
 class WebSecrets:
     client_secret: str
-    api_key: str
     session_key: bytes
 
 
@@ -49,7 +51,6 @@ def load(secret_arn: str, client: Any | None = None) -> WebSecrets:
         raise RuntimeError("session_key must be at least 32 random bytes, base64url")
     _cache = WebSecrets(
         client_secret=str(data.get("client_secret", "")),
-        api_key=str(data.get("api_key", "")),
         session_key=key_bytes,
     )
     return _cache

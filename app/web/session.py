@@ -1,10 +1,12 @@
 """Signed session cookie and CSRF token (HANDOFF §4.9 cookie row, §11.6).
 
 The session is a signed, not encrypted, cookie: ``<base64url(json)>.<hmac-sha256>``.
-It carries the subject, display name and expiry — nothing secret. The signing key
-comes from Secrets Manager (``app.web.secrets``). Revocation is prospective (§12.9):
-a disabled user is refused on the next request because ``app.web.app`` checks the
-PROFILE status per request; the cookie itself is only a proof of login.
+It carries the subject, display name, expiry and the profile's ``session_epoch`` at
+issue — nothing secret. The signing key comes from Secrets Manager
+(``app.web.secrets``). Revocation is prospective (§12.9): a disabled user is refused
+on the next request because ``app.web.app`` checks the PROFILE status per request,
+and the same read refuses a cookie whose epoch is behind the profile's — "Sign out
+everywhere" (§11.6) bumps the epoch. The cookie itself is only a proof of login.
 
 CSRF: every state-changing form carries ``HMAC(key, "csrf:" + session signature)``;
 the POST handler compares it against the same derivation. A token is therefore bound
@@ -30,6 +32,7 @@ class Principal:
     email: str
     display_name: str
     expires_at: int
+    epoch: int = 0  # the profile's session_epoch when issued; 0 for cookies from before
     signature: str = ""  # the cookie's HMAC; the CSRF token derives from it
 
     @property
@@ -76,10 +79,24 @@ def decode(key: bytes, token: str, *, now: float | None = None) -> dict[str, obj
 
 
 def issue_session(
-    key: bytes, principal_subject: str, email: str, display_name: str, hours: int
+    key: bytes,
+    principal_subject: str,
+    email: str,
+    display_name: str,
+    hours: int,
+    epoch: int = 0,
 ) -> str:
     exp = int(time.time()) + hours * 3600
-    return encode(key, {"sub": principal_subject, "email": email, "name": display_name, "exp": exp})
+    return encode(
+        key,
+        {
+            "sub": principal_subject,
+            "email": email,
+            "name": display_name,
+            "exp": exp,
+            "epoch": epoch,
+        },
+    )
 
 
 def load_session(key: bytes, cookie: str | None) -> Principal | None:
@@ -92,11 +109,13 @@ def load_session(key: bytes, cookie: str | None) -> Principal | None:
     exp = data.get("exp")
     if not isinstance(sub, str) or not sub or not isinstance(exp, int | float):
         return None
+    epoch = data.get("epoch", 0)
     return Principal(
         subject=sub,
         email=str(data.get("email", "")),
         display_name=str(data.get("name", "")),
         expires_at=int(exp),
+        epoch=int(epoch) if isinstance(epoch, int) and not isinstance(epoch, bool) else 0,
         signature=cookie.rsplit(".", 1)[1],
     )
 

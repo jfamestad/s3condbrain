@@ -53,7 +53,6 @@ def _web_env(monkeypatch: pytest.MonkeyPatch, bucket: Any, grant_table: Any) -> 
         json.dumps(
             {
                 "client_secret": "shh",
-                "api_key": "sk_test",
                 "session_key": base64.urlsafe_b64encode(SESSION_KEY).decode(),
             }
         ),

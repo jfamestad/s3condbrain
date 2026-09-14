@@ -6,17 +6,24 @@ Four S3 operations, **pointer first**:
 2. ``GetObject from`` — must be live content; ``if_version`` must match.
 3. The impact report is computed here, before any write, so a failure leaves
    nothing changed and a success reports exactly what it changed (§4.6).
-4. ``PutObject`` the pointer at ``from`` with ``If-Match: <if_version>``. A stale
+4. **The boundary decision.** A move through which anyone *gains* access is refused
+   on the tool surface with ``403 boundary_change`` carrying the report, and nothing
+   is written (§4.6, §4.7, §10.14). Such moves are performed in the web application,
+   where a person sees the impact and confirms — that path calls ``perform`` with
+   ``allow_widening=True``. Moves that widen nobody's access proceed here.
+5. ``PutObject`` the pointer at ``from`` with ``If-Match: <if_version>``. A stale
    token fails here with **nothing written anywhere** — no content crosses a
    permission boundary for a move that was refused (§8.3, §13.2).
-5. ``PutObject`` the content at ``to`` with ``If-None-Match: *``, ``seq + 1``,
+6. ``PutObject`` the content at ``to`` with ``If-None-Match: *``, ``seq + 1``,
    ``moved_from`` in frontmatter and ``kind: moved_in`` / ``moved-from`` in metadata.
-6. Refresh both parent listings, best effort.
+7. Refresh both parent listings, best effort.
 
 S3 has no multi-object transaction, so the mitigation is idempotence: a crash between
-4 and 5 leaves a pointer at ``from`` whose target answers 404 and the content intact
+5 and 6 leaves a pointer at ``from`` whose target answers 404 and the content intact
 one version beneath it. Retrying the same call finds that pointer naming ``to``, finds
-``to`` empty, and completes step 5 from the version beneath the pointer.
+``to`` empty, and completes step 6 from the version beneath the pointer. The boundary
+check does not apply to that resume: the source already committed to the move, and
+finishing it is the only way the article is readable anywhere.
 """
 
 from __future__ import annotations
@@ -27,7 +34,15 @@ from typing import Any
 from app.auth.credentials import Shape
 from app.auth.types import Permission, Resolution
 from app.config import SCOPE_WRITE
-from app.errors import ToolError, bad_request, conflict, forbidden, internal, not_found
+from app.errors import (
+    ToolError,
+    bad_request,
+    boundary_change,
+    conflict,
+    forbidden,
+    internal,
+    not_found,
+)
 from app.mcp.protocol import Tool, ToolContext
 from app.mcp.tools._common import (
     ARTICLE_PATH_SCHEMA,
@@ -59,7 +74,18 @@ DESCRIPTION = (
     "Relocate an article, leaving a permanent forward pointer at the old path. Returns "
     "who gains and who loses access. Because grants are positional, a move re-evaluates "
     "readership in both directions — surface access_changes to the person before "
-    "treating the move as done."
+    "treating the move as done. A move through which anyone would GAIN access is "
+    "refused here with 403 boundary_change (the report is in the error): it is done in "
+    "the web application, where the person sees who gains access and confirms. Moves "
+    "that widen nobody's access — a rename within a folder, or a move into a more "
+    "private place — proceed. Errors: 400 bad input; 403 forbidden without write on "
+    "both ends; 403 boundary_change when someone would gain access; 404 no such source; "
+    "409 stale if_version or occupied destination (nothing written)."
+)
+
+REFUSAL = (
+    "This move would give {who} access. It has to be done in the web application, "
+    "where the person can see who gains access and confirm."
 )
 
 ACCESS_CHANGE_SCHEMA: dict[str, Any] = {
@@ -80,9 +106,20 @@ ACCESS_CHANGE_SCHEMA: dict[str, Any] = {
 INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["from", "to", "if_version"],
+    "description": (
+        "Moves that would give anyone access are refused (403 boundary_change) and are "
+        "performed in the web application's admin console instead. Moves that widen "
+        "nobody's access proceed."
+    ),
     "properties": {
         "from": ARTICLE_PATH_SCHEMA,
-        "to": ARTICLE_PATH_SCHEMA,
+        "to": {
+            **ARTICLE_PATH_SCHEMA,
+            "description": (
+                ARTICLE_PATH_SCHEMA["description"] + " If moving here would give anyone "
+                "access, the call is refused; do it in the web application."
+            ),
+        },
         "if_version": VERSION_SCHEMA,
     },
 }
@@ -299,13 +336,61 @@ def _write_destination(
     return frontmatter, written
 
 
-def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    from_path = article_path(args.get("from"), "from")
-    to_path = article_path(args.get("to"), "to")
+def _widening(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in changes if c["direction"] == "gains"]
+
+
+def _refusal(gains: list[dict[str, Any]], changes: list[dict[str, Any]]) -> ToolError:
+    """Step 4's ``403 boundary_change``, carrying the whole report (§10.14) so the
+    agent can say what the console will show."""
+    who = "1 person" if len(gains) == 1 else f"{len(gains)} people"
+    return boundary_change(REFUSAL.format(who=who), access_changes=changes)
+
+
+def perform(
+    ctx: ToolContext,
+    from_path: Any,
+    to_path: Any,
+    if_version: Any,
+    *,
+    allow_widening: bool,
+) -> dict[str, Any]:
+    """The move, steps 1–7, for both surfaces. Arguments arrive raw and are
+    validated here, so a malformed call is the same ``400`` from either surface.
+
+    The tool handler calls this with ``allow_widening=False``: a move through which
+    anyone gains access stops at step 4 with ``403 boundary_change`` and nothing
+    written. The web application's move page, where a person has seen the impact and
+    confirmed, calls it with ``allow_widening=True`` (§4.6). Everything else — the
+    §10.2 validation, ``write`` on both ends, the pointer-first write order and the
+    ``if_version`` semantics — is identical on both surfaces.
+
+    Args:
+        ctx: The caller's tool context; identity comes from here, never from arguments.
+        from_path: The article's current path (§10.2 ``article_path``).
+        to_path: Where it goes (§10.2 ``article_path``; reserved names refused).
+        if_version: The version token from the caller's most recent read, quotes
+            tolerated; ignored only when resuming a move whose pointer already
+            stands (§8.3).
+        allow_widening: Whether a move that gives someone access may proceed.
+
+    Returns:
+        The §10.11 result: ``from``, ``to``, ``version``, ``seq``, ``access_changes``,
+        ``history_note``.
+
+    Raises:
+        ToolError: 400 bad input; 403 ``forbidden`` without ``write`` on either end or
+            when storage refuses; 403 ``boundary_change`` when the move would give
+            someone access and ``allow_widening`` is false; 404 no live source; 409
+            stale ``if_version`` or occupied destination (nothing written); 500 when a
+            pointer has nothing beneath it.
+    """
+    from_path = article_path(from_path, "from")
+    to_path = article_path(to_path, "to")
     reject_reserved_name(to_path)
     if from_path == to_path:
         raise bad_request("'from' and 'to' must be different paths.")
-    if_version = version_arg(args)
+    if_version = version_arg({"if_version": if_version})
 
     ctx.require(from_path, Permission.WRITE)
     ctx.require(to_path, Permission.WRITE)
@@ -332,6 +417,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     changes = access_changes(ctx, from_path, to_path)
 
     if resuming:
+        # The source already committed to this move; nothing left to decide.
         log_event(ctx, "info", "move_resumed", from_path=from_path, to_path=to_path)
         try:
             beneath = last_content_version(st, s3_from, from_path)
@@ -345,14 +431,26 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         content = parse(beneath.body)
         seq = parse(current.body).seq
     else:
-        # 4. Pointer first. A stale token fails here with nothing written anywhere.
+        # 4. The boundary decision (§4.6): giving someone access is not an agent action.
+        gains = _widening(changes)
+        if gains and not allow_widening:
+            log_event(
+                ctx,
+                "info",
+                "move_refused_boundary",
+                from_path=from_path,
+                to_path=to_path,
+                gains=len(gains),
+            )
+            raise _refusal(gains, changes)
+        # 5. Pointer first. A stale token fails here with nothing written anywhere.
         content = parse(current.body)
         seq = _write_pointer(ctx, st, s3_from, current, to_path)
 
-    # 5. Content lands at the destination only after the source has committed.
+    # 6. Content lands at the destination only after the source has committed.
     dest_frontmatter, written = _write_destination(ctx, st, s3_to, from_path, to_path, content, seq)
 
-    # 6. Listings: the child leaves one folder and joins another.
+    # 7. Listings: the child leaves one folder and joins another.
     refresh_parent(ctx, from_path, None)
     refresh_parent(
         ctx,
@@ -370,6 +468,17 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The tool surface: never a widening move (§4.6, §4.7)."""
+    return perform(
+        ctx,
+        args.get("from"),
+        args.get("to"),
+        args.get("if_version"),
+        allow_widening=False,
+    )
+
+
 TOOL = Tool(
     name="move_article",
     description=DESCRIPTION,
@@ -379,4 +488,12 @@ TOOL = Tool(
     handler=handle,
 )
 
-__all__ = ["ACCESS_CHANGE_SCHEMA", "HISTORY_NOTE", "TOOL", "access_changes", "handle"]
+__all__ = [
+    "ACCESS_CHANGE_SCHEMA",
+    "HISTORY_NOTE",
+    "REFUSAL",
+    "TOOL",
+    "access_changes",
+    "handle",
+    "perform",
+]

@@ -44,8 +44,9 @@ failure this list is for.
       confirm the SNS subscription from the email ([§4](#4-deploy)).
 - [ ] **7. DNS.** CNAME or ALIAS from the hostname to the api stack's `DomainTarget`;
       the metadata URL answers ([§2](#2-domain-and-certificate), [§4](#4-deploy)).
-- [ ] **8. Secret filled.** `client_secret` and `api_key` replaced in the secret at
-      `WebSecretArn` ([§5](#5-workos-the-authorization-server) step 7).
+- [ ] **8. Secret filled.** `client_secret` replaced in the secret at `WebSecretArn`
+      ([§5](#5-workos-the-authorization-server) step 7). It is the only WorkOS
+      credential any function holds; there is no management API key to fill.
 - [ ] **9. Gate script passed** — `GATE PASSED`, check 4 included. Keep the `sub` from
       the token it decodes; step 10 needs it ([§5](#5-workos-the-authorization-server)
       step 5).
@@ -70,6 +71,9 @@ Post-launch, once per environment:
       while it is off, so there is nothing to look for in a log — observe by doing:
       flip it in **dev** first, add the connector ([§7](#7-add-the-connector)),
       exercise a tool call; if that works, the client sends them, and prod can follow.
+- [ ] **Prod: vault account and replica bucket.** Create the vault account and deploy
+      the replica bucket (decision 2A — Object Lock compliance mode, own key, no
+      application) before loading real records.
 
 ---
 
@@ -220,12 +224,16 @@ decide whether WorkOS is acceptable at all (§2). In order:
    confidential, authorization code + PKCE, redirect URI exactly
    `https://<domain>/app/callback`. Put its client id in `infra/config.py`
    (`workos_web_client_id`). After `make deploy`, open the secret named by the
-   `WebSecretArn` output and replace the two `REPLACE-ME` values: `client_secret`
-   (that client's secret) and `api_key` (a WorkOS **management API key**, `sk_…`,
-   from API Keys in the dashboard — used only to create users and send invitations).
-   `session_key` is generated for you; leave it. Until the placeholders are replaced,
-   login fails at the token exchange and "Add a person" answers 503 with a message
-   pointing here.
+   `WebSecretArn` output and replace the one `REPLACE-ME` value, `client_secret`,
+   with that client's secret. `session_key` is generated for you; leave it. Until
+   the placeholder is replaced, login fails at the token exchange.
+
+   That client secret is the only WorkOS credential any function holds, and it can
+   do nothing but exchange this client's own login codes. **Do not create a
+   management API key for the application** (HANDOFF §11.6 "Adding a person"): that
+   key can change any user's email address, and nothing needs it — people are
+   created in the dashboard, by you, and recorded in the console
+   ([§6](#6-first-owner), "Adding everyone else").
 
 ## 6. First owner
 
@@ -246,6 +254,22 @@ gate script and read it from the decoded token. `--bootstrap` bypasses the owner
 guard for exactly this row (`own` on `/` in an empty table), writes the PROFILE row
 the web application requires at login, and logs loudly. It refuses once `/` has an
 owner. Later grants go through the admin console or the same script with `--granter`.
+
+### Adding everyone else
+
+Two steps, dashboard then console. The application never calls WorkOS (HANDOFF
+§11.6 "Adding a person", §15.2).
+
+1. **WorkOS dashboard → Users → Create user**, with their email address; then
+   **Invite**. WorkOS sends them the sign-in email. Copy the user id it shows
+   (`user_…`).
+2. **Admin console → People → "Add a person"**: paste that id, their email, how their
+   name should appear, and where they get access. The console writes their profile
+   (status `invited` until their first sign-in) and the first grant, and shows the
+   connector block to send them.
+
+An id that already has a profile simply gets the grant. The status becomes `active`
+when they first sign in through the invitation email.
 
 ## 7. Add the connector
 

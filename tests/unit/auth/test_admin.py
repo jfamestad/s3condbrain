@@ -330,6 +330,41 @@ class TestProfiles:
             admin.set_status("nobody", "disabled")
         assert admin.list_profiles() == []
 
+    def test_session_epoch_starts_at_zero_and_bumps_by_one(self, admin: GrantAdmin) -> None:
+        admin.create_profile(ALICE, "alice@example.com", "Alice", "invited")
+        assert admin.get_profile(ALICE).session_epoch == 0  # type: ignore[union-attr]
+        assert admin.bump_session_epoch(ALICE) == 1
+        assert admin.bump_session_epoch(ALICE) == 2
+        p = admin.get_profile(ALICE)
+        assert p is not None and p.session_epoch == 2
+        assert (p.email, p.display_name, p.status) == ("alice@example.com", "Alice", "invited")
+        item = admin.table.get_item(Key={"pk": f"U#{ALICE}", "sk": "PROFILE"})["Item"]
+        assert item["session_epoch"] == 2
+        assert [q.session_epoch for q in admin.list_profiles()] == [2]
+
+    def test_session_epoch_missing_on_an_older_row_reads_as_zero(self, admin: GrantAdmin) -> None:
+        """A PROFILE written before the attribute existed: 0 until first bumped."""
+        admin.table.put_item(
+            Item={
+                "pk": f"U#{BOB}",
+                "sk": "PROFILE",
+                "email": "bob@example.com",
+                "display_name": "Bob",
+                "status": "active",
+                "gs1pk": "PROFILE",
+                "gs1sk": "bob@example.com",
+            }
+        )
+        assert admin.get_profile(BOB) == Profile(BOB, "bob@example.com", "Bob", "active")
+        assert admin.bump_session_epoch(BOB) == 1
+        assert admin.get_profile(BOB).session_epoch == 1  # type: ignore[union-attr]
+
+    def test_bump_session_epoch_on_missing_profile_is_value_error(self, admin: GrantAdmin) -> None:
+        with pytest.raises(ValueError):
+            admin.bump_session_epoch("nobody")
+        assert admin.list_profiles() == []
+        assert admin.get_profile("nobody") is None  # the failed ADD created no row
+
 
 # --- audit lines (AS-10) -------------------------------------------------------------------
 
@@ -369,8 +404,10 @@ class TestAudit:
     def test_profile_writes_log(self, admin: GrantAdmin, log_lines) -> None:
         admin.create_profile(ALICE, "alice@example.com", "Alice", "invited")
         admin.set_status(ALICE, "active")
-        actions = [ln["action"] for ln in log_lines() if ln["message"] == "admin_write"]
-        assert actions == ["create_profile", "set_status"]
+        admin.bump_session_epoch(ALICE)
+        writes = [ln for ln in log_lines() if ln["message"] == "admin_write"]
+        assert [ln["action"] for ln in writes] == ["create_profile", "set_status", "session_epoch"]
+        assert writes[-1]["subject"] == ALICE and writes[-1]["epoch"] == 1
 
 
 # --- scripts/grant_owner.py ----------------------------------------------------------------

@@ -130,8 +130,12 @@ def current_principal(request: Request) -> sess.Principal | None:
     if principal is None:
         return None
     # Revocation is prospective (§12.9): a disabled profile is refused now, not at expiry.
+    # The same read enforces "Sign out everywhere" (§11.6): a cookie issued under an
+    # older session_epoch than the profile's is a logged-out cookie.
     profile = build_context(request, None).admin.get_profile(principal.subject)
     if profile is not None and profile.status == "disabled":
+        return None
+    if profile is not None and principal.epoch != profile.session_epoch:
         return None
     return principal
 
@@ -213,6 +217,7 @@ def login_callback(request: Request, ctx: WebContext) -> Response:
             identity.email or profile.email,
             profile.display_name or identity.display_name,
             ctx.settings.session_hours,
+            epoch=profile.session_epoch,
         ),
         max_age=ctx.settings.session_hours * 3600,
     )
@@ -222,6 +227,17 @@ def login_callback(request: Request, ctx: WebContext) -> Response:
 
 
 def logout(request: Request, ctx: WebContext) -> Response:
+    return redirect(PREFIX + "/login", cookies=[clear_cookie(sess.SESSION_COOKIE)])
+
+
+def logout_all(request: Request, ctx: WebContext) -> Response:
+    """ "Sign out everywhere" (§11.6): bump the profile's session_epoch so every cookie
+    issued so far — this one and any copied one — is refused from the next request."""
+    try:
+        epoch = ctx.admin.bump_session_epoch(ctx.subject)
+    except ValueError:
+        epoch = None  # the profile is gone; there is nothing left to sign out of
+    logger.info("logout_all", request_id=request.request_id, subject=ctx.subject, epoch=epoch)
     return redirect(PREFIX + "/login", cookies=[clear_cookie(sess.SESSION_COOKIE)])
 
 
@@ -244,6 +260,7 @@ def router() -> Router:
         r.add("GET", "/login/start", public(login_start))
         r.add("GET", "/callback", public(login_callback))
         r.add("POST", "/logout", view(logout))
+        r.add("POST", "/logout-all", view(logout_all))
         for name in VIEW_MODULES:
             try:
                 mod = importlib.import_module(f"app.web.views.{name}")

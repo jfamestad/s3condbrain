@@ -79,6 +79,23 @@ def test_session_expiry() -> None:
     assert sess.load_session(SESSION_KEY, tok) is None
 
 
+def test_session_carries_the_epoch_and_older_cookies_read_as_zero() -> None:
+    tok = sess.issue_session(SESSION_KEY, SUBJECT, "e@x", "Name", 1, epoch=3)
+    p = sess.load_session(SESSION_KEY, tok)
+    assert p is not None and p.epoch == 3
+    payload = sess.decode(SESSION_KEY, tok)
+    assert payload is not None and payload["epoch"] == 3
+    # Issued before epochs existed, or with a mangled one: epoch 0, which only a
+    # profile that has never been bumped accepts.
+    exp = int(time.time()) + 60
+    legacy = sess.load_session(SESSION_KEY, sess.encode(SESSION_KEY, {"sub": SUBJECT, "exp": exp}))
+    assert legacy is not None and legacy.epoch == 0
+    for odd in ("7", 7.5, True, None):
+        mangled = sess.encode(SESSION_KEY, {"sub": SUBJECT, "exp": exp, "epoch": odd})
+        loaded = sess.load_session(SESSION_KEY, mangled)
+        assert loaded is not None and loaded.epoch == 0, odd
+
+
 def test_csrf_bound_to_session() -> None:
     a = sess.issue_session(SESSION_KEY, SUBJECT, "e", "n", 1)
     b = sess.issue_session(SESSION_KEY, "user_other", "e", "n", 1)
@@ -282,6 +299,45 @@ def test_callback_success_sets_session_and_activates_invited(
     assert admin.get_profile(SUBJECT).status == "active"
 
 
+def test_callback_issues_the_cookie_under_the_profile_epoch(
+    monkeypatch: pytest.MonkeyPatch, rsa_key: Any, admin: Any
+) -> None:
+    """After a "Sign out everywhere", a fresh login must carry the new epoch, or it
+    would be refused on its own next request."""
+    admin.create_profile(SUBJECT, "test@example.com", "Test Person", "active")
+    assert admin.bump_session_epoch(SUBJECT) == 1
+    s = Settings.from_env()
+    body: dict[str, Any] = {}
+    fake = _client(s, rsa_key, body)
+    monkeypatch.setattr(web_app, "authkit", lambda ctx: fake)
+    _, payload = fake.start()
+    body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]))
+    out = call(
+        event(
+            "GET",
+            "/app/callback",
+            query={"code": "c", "state": str(payload["state"])},
+            cookies={sess.OAUTH_COOKIE: sess.encode(SESSION_KEY, payload)},
+        )
+    )
+    assert out["statusCode"] == 303
+    raw = next(
+        c for c in out["multiValueHeaders"]["Set-Cookie"] if c.startswith("__Host-wiki_session=")
+    )
+    issued = sess.load_session(SESSION_KEY, raw.split(";", 1)[0].split("=", 1)[1])
+    assert issued is not None and issued.epoch == 1
+    assert (
+        call(
+            event(
+                "GET",
+                "/app/admin",
+                cookies={sess.SESSION_COOKIE: raw.split(";", 1)[0].split("=", 1)[1]},
+            )
+        )["statusCode"]
+        == 200
+    )
+
+
 def test_callback_with_nonce_for_another_login_is_400(
     monkeypatch: pytest.MonkeyPatch, rsa_key: Any, admin: Any
 ) -> None:
@@ -328,6 +384,86 @@ def test_disabled_profile_is_logged_out(session_cookie: str, admin: Any) -> None
     admin.set_status(SUBJECT, "disabled")
     out = call(event("GET", "/app/", cookies={sess.SESSION_COOKIE: session_cookie}))
     assert out["statusCode"] == 303 and "/app/login" in out["headers"]["Location"]
+
+
+# --- sign out everywhere (§11.6 session epochs) ---------------------------------------------
+
+
+def _get_admin(cookie: str) -> dict[str, Any]:
+    return call(event("GET", "/app/admin", cookies={sess.SESSION_COOKIE: cookie}))
+
+
+def test_cookie_behind_the_profile_epoch_is_logged_out(session_cookie: str, admin: Any) -> None:
+    assert _get_admin(session_cookie)["statusCode"] == 200  # issued at epoch 0, profile at 0
+    assert admin.bump_session_epoch(SUBJECT) == 1
+    out = _get_admin(session_cookie)
+    assert out["statusCode"] == 303 and out["headers"]["Location"].startswith("/app/login")
+    # A POST with a valid CSRF token is no better: the session itself is gone.
+    out = call(
+        event(
+            "POST",
+            "/app/logout",
+            cookies={sess.SESSION_COOKIE: session_cookie},
+            form={"csrf": csrf_for(session_cookie)},
+        )
+    )
+    assert out["statusCode"] == 303 and out["headers"]["Location"].startswith("/app/login")
+
+
+def test_logout_all_bumps_the_epoch_and_kills_every_older_cookie(
+    session_cookie: str, admin: Any
+) -> None:
+    copied = session_cookie  # the same cookie in another browser
+    out = call(
+        event(
+            "POST",
+            "/app/logout-all",
+            cookies={sess.SESSION_COOKIE: session_cookie},
+            form={"csrf": csrf_for(session_cookie)},
+        )
+    )
+    assert out["statusCode"] == 303 and out["headers"]["Location"] == "/app/login"
+    assert any("Max-Age=0" in c for c in out["multiValueHeaders"]["Set-Cookie"])
+    assert admin.get_profile(SUBJECT).session_epoch == 1
+    assert _get_admin(copied)["statusCode"] == 303
+    fresh = sess.issue_session(SESSION_KEY, SUBJECT, "test@example.com", "Test Person", 12, epoch=1)
+    assert _get_admin(fresh)["statusCode"] == 200
+    stale = sess.issue_session(SESSION_KEY, SUBJECT, "test@example.com", "Test Person", 12, epoch=2)
+    assert _get_admin(stale)["statusCode"] == 303  # ahead is as wrong as behind
+
+
+def test_logout_all_needs_csrf_and_bumps_nothing_without_it(
+    session_cookie: str, admin: Any
+) -> None:
+    out = call(
+        event("POST", "/app/logout-all", cookies={sess.SESSION_COOKIE: session_cookie}, form={})
+    )
+    assert out["statusCode"] == 403
+    assert admin.get_profile(SUBJECT).session_epoch == 0
+    assert _get_admin(session_cookie)["statusCode"] == 200
+
+
+def test_ordinary_logout_does_not_bump_the_epoch(session_cookie: str, admin: Any) -> None:
+    out = call(
+        event(
+            "POST",
+            "/app/logout",
+            cookies={sess.SESSION_COOKIE: session_cookie},
+            form={"csrf": csrf_for(session_cookie)},
+        )
+    )
+    assert out["statusCode"] == 303
+    assert admin.get_profile(SUBJECT).session_epoch == 0
+    # Server-side the cookie is still good; only this browser dropped it. That is the
+    # difference "Sign out everywhere" exists to make.
+    assert _get_admin(session_cookie)["statusCode"] == 200
+
+
+def test_every_page_offers_both_sign_out_buttons(session_cookie: str) -> None:
+    body = _get_admin(session_cookie)["body"]
+    assert 'action="/app/logout"' in body and 'action="/app/logout-all"' in body
+    assert "Sign out everywhere" in body
+    assert body.count('name="csrf"') >= 2
 
 
 def test_unknown_route_is_404_page_and_unhandled_is_500_without_details(

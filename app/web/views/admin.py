@@ -15,9 +15,11 @@ guard itself is enforced in ``GrantAdmin`` — this module only decides what to 
 That scoping extends to the directory itself: a subtree owner is never shown, and
 never told, who else has an account. The grant form lists only people already in
 their scope, by display name; anyone else is reached by typing an email. "Add a
-person" with an email that already has an account simply grants to it and lands on
-their page, as for a new account, so the answer is the same either way; a lookup
-that cannot be acted on gets one fixed sentence whatever the reason
+person" takes the WorkOS user id the operator created in the dashboard (§11.6
+"Adding a person": no function holds the management API key, so nothing here calls
+WorkOS); an id that already has a profile simply gets the grant and lands on their
+page, as a new account would, so the answer is the same either way; a lookup that
+cannot be acted on gets one fixed sentence whatever the reason
 (``EMAIL_NOT_GRANTABLE``, ``EMAIL_NOT_ADDABLE``).
 
 Grants read as sentences, not ACL rows: *"Dana can write everything under
@@ -54,7 +56,6 @@ from app.web.app import PREFIX, page, view
 from app.web.audit import AuditQuery, AuditResult
 from app.web.context import WebContext
 from app.web.http import HttpError, Request, Response, Router, redirect
-from app.web.workos import WorkOSClient, WorkOSError
 
 AUDIT_DAYS = 30
 LOG_GROUP_ENV = "MCP_LOG_GROUP"  # set by the compute stack; "" → audit page says so
@@ -64,6 +65,7 @@ VERSIONS_PAGE = 100
 _ARTICLE_RE = re.compile(ARTICLE_PATH_PATTERN)
 _FOLDER_RE = re.compile(FOLDER_PATH_PATTERN)
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_SUBJECT_RE = re.compile(r"^user_[A-Za-z0-9]+$")  # a WorkOS user id, the token's ``sub``
 
 # Said wherever a grant is made or shown (§12.9). Templates carry the same words.
 REVOCATION_SENTENCE = (
@@ -136,12 +138,12 @@ def _profile_by_email(ctx: WebContext, email: str) -> Profile | None:
 def _grant_existing(
     ctx: WebContext, profile: Profile, node: str, permission: Permission
 ) -> Response:
-    """ "Add a person" whose email already has a profile: grant and land on their
-    page, exactly as a new account would (§15.2 step 1). No WorkOS call, no
-    invitation — they can already sign in. From the owner's side the two paths
-    answer alike, so the form never says whether an address was known here; the
-    person is then legitimately in their scope (§11.6). The one refusal is a
-    disabled account, and it is the same sentence for every owner.
+    """ "Add a person" whose subject already has a profile: grant and land on their
+    page, exactly as a new account would (§15.2 step 1) — they can already sign in.
+    From the owner's side the two paths answer alike, so the form never says whether
+    an id was known here; the person is then legitimately in their scope (§11.6).
+    The one refusal is a disabled account, and it is the same sentence for every
+    owner.
     """
     if profile.status == "disabled":
         raise HttpError(400, EMAIL_NOT_ADDABLE)
@@ -153,7 +155,7 @@ def _grant_existing(
         by=ctx.subject,
         existing=True,
     )
-    return redirect(f"{PREFIX}/admin/people/{profile.subject}?added=1&invite=none")
+    return redirect(f"{PREFIX}/admin/people/{profile.subject}?added=1")
 
 
 def _names(profiles: dict[str, Profile]) -> dict[str, str]:
@@ -258,22 +260,19 @@ def _email_arg(raw: str) -> str:
     return value
 
 
+def _subject_arg(raw: str) -> str:
+    """The WorkOS user id from the dashboard (``user_…``), which is the ``sub`` every
+    token for this person carries and therefore our subject."""
+    value = (raw or "").strip()
+    if not _SUBJECT_RE.match(value) or len(value) > 128:
+        raise HttpError(400, "Give the WorkOS user id from the dashboard: it starts with user_ .")
+    return value
+
+
 def _back_arg(raw: str, default: str) -> str:
     """A same-app admin path to return to after a POST; never an open redirect."""
     value = raw or ""
     return value if value.startswith(PREFIX + "/admin") else default
-
-
-def _split_name(display_name: str) -> tuple[str, str]:
-    first, _, last = display_name.strip().partition(" ")
-    return first, last.strip()
-
-
-def _workos(ctx: WebContext) -> WorkOSClient:
-    try:
-        return WorkOSClient(ctx.secrets.api_key)
-    except RuntimeError as exc:
-        raise HttpError(503, str(exc)) from None
 
 
 def _connector(ctx: WebContext, profile: Profile) -> str:
@@ -339,62 +338,41 @@ def people(request: Request, ctx: WebContext) -> Response:
 
 
 def add_person(request: Request, ctx: WebContext) -> Response:
-    """§15.2 step 1: create at WorkOS, record the profile and the first grant, have
-    WorkOS send the sign-in email. Then show the connector block to send on."""
+    """§15.2 step 1, second half. The operator has already created the person in the
+    WorkOS dashboard (which sent the sign-in invitation); this records the profile
+    under the resulting user id, writes the first grant, and lands on the page that
+    shows the connector block to send on. Nothing here calls WorkOS (§11.6)."""
     form = request.form()
+    subject = _subject_arg(form.get("subject", ""))
     email = _email_arg(form.get("email", ""))
     display_name = (form.get("display_name") or "").strip()[:120] or email.split("@", 1)[0]
     node = _node_arg(form.get("node", ""))
     permission = _permission_arg(form.get("permission", ""))
-    # The owner guard runs before anything touches WorkOS: a refused grant must not
-    # leave a stray user behind.
+    # The owner guard runs before any lookup or write: a refused grant must not
+    # leave a stray profile behind, and a node the viewer does not own answers 403
+    # whatever the id or email, so the form cannot probe accounts outside its scope.
     try:
         ctx.admin.assert_owner(ctx.subject, node)
     except NotAnOwner:
         raise HttpError(403, f"You do not own {node}, so you cannot grant there.") from None
-    existing = _profile_by_email(ctx, email)
+    existing = ctx.admin.get_profile(subject)
     if existing is not None:
         return _grant_existing(ctx, existing, node, permission)
-    workos = _workos(ctx)
-    try:
-        subject = workos.find_user_by_email(email)
-        if subject is None:
-            first, last = _split_name(display_name)
-            subject = workos.create_user(email, first, last)
-    except WorkOSError as exc:
-        ctx.log.warning(
-            "workos_create_user_failed",
-            request_id=ctx.request_id,
-            status=exc.status,
-            code=exc.code,
-        )
-        raise HttpError(
-            502, f"WorkOS could not create the user ({exc.code}). Nothing was changed."
-        ) from None
+    if _profile_by_email(ctx, email) is not None:
+        # The email belongs to a different subject: one profile per person. The
+        # same sentence as every other refusal, so it confirms nothing.
+        raise HttpError(400, EMAIL_NOT_ADDABLE)
     try:
         ctx.admin.create_profile(subject, email, display_name, "invited")
     except ValueError:
-        # The WorkOS user already has a profile under this subject (their email
-        # changed upstream). Same answer as an email we knew.
+        # A profile appeared under this subject between the two calls.
         held = ctx.admin.get_profile(subject)
-        if held is None:  # a profile that vanished between the two calls
+        if held is None:
             raise HttpError(400, EMAIL_NOT_ADDABLE) from None
         return _grant_existing(ctx, held, node, permission)
     ctx.admin.grant(ctx.subject, subject, node, permission)
-    invite = "sent"
-    try:
-        workos.send_invitation(email)
-    except WorkOSError as exc:
-        invite = "failed"
-        ctx.log.warning(
-            "workos_invitation_failed",
-            request_id=ctx.request_id,
-            subject=subject,
-            status=exc.status,
-            code=exc.code,
-        )
     ctx.log.info("person_added", request_id=ctx.request_id, subject=subject, by=ctx.subject)
-    return redirect(f"{PREFIX}/admin/people/{subject}?added=1&invite={invite}")
+    return redirect(f"{PREFIX}/admin/people/{subject}?added=1")
 
 
 def person(request: Request, ctx: WebContext) -> Response:
@@ -420,7 +398,6 @@ def person(request: Request, ctx: WebContext) -> Response:
         grants=[_grant_view(g, names) for g in sorted(theirs, key=lambda g: g.node)],
         connector=_connector(ctx, profile),
         added=request.query.get("added") == "1",
-        invite=request.query.get("invite", ""),
         revocation=REVOCATION_SENTENCE,
     )
 

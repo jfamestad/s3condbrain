@@ -93,7 +93,7 @@ class ComputeStack(cdk.Stack):
             self,
             "WebSecretArn",
             value=self.web_secret.secret_arn,
-            description="Fill client_secret and api_key from the WorkOS dashboard (docs/DEPLOY.md)",
+            description="Fill client_secret from the WorkOS dashboard (docs/DEPLOY.md)",
         )
 
     # ------------------------------------------------------------------ urls
@@ -273,18 +273,21 @@ class ComputeStack(cdk.Stack):
         )
 
     def _create_web_secret(self) -> secretsmanager.Secret:
-        """One JSON secret: client_secret + api_key (operator fills from WorkOS) and a
-        generated session_key (48 alphanumerics → 36 bytes after base64url)."""
+        """One JSON secret: client_secret (operator fills from WorkOS — the web app's
+        own OAuth client, which can only exchange its own login codes) and a generated
+        session_key (48 alphanumerics → 36 bytes after base64url).
+
+        Deliberately no WorkOS management API key (HANDOFF §11.6 "Adding a person"):
+        that key can change any user's email, and no function needs it — people are
+        created in the WorkOS dashboard and recorded in the console."""
         return secretsmanager.Secret(
             self,
             "WebSecret",
-            description="wiki web app: AuthKit client secret, WorkOS API key, session key",
+            description="wiki web app: AuthKit client secret, session key",
             # AWS-managed key: a CMK here would put a key-policy grant for the web role
             # into the storage stack and cycle the dependency graph.
             generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template=json.dumps(
-                    {"client_secret": "REPLACE-ME", "api_key": "REPLACE-ME"}
-                ),
+                secret_string_template=json.dumps({"client_secret": "REPLACE-ME"}),
                 generate_string_key="session_key",
                 password_length=48,
                 exclude_punctuation=True,

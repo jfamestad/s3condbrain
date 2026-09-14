@@ -332,6 +332,19 @@ def test_web_client_id_from_config_or_context_is_silent(tmp_path: Path) -> None:
             assert not any("workosWebClientId" in a for a in annotations), annotations
 
 
+def test_web_secret_holds_the_client_secret_and_no_management_key(dev: Synth, prod: Synth) -> None:
+    """HANDOFF §11.6 "Adding a person": no function holds a WorkOS management API key,
+    so the secret has no slot for one — only the web app's own client secret to fill
+    in, plus the generated session key."""
+    for synth in (dev, prod):
+        secret = _only(synth.compute, "AWS::SecretsManager::Secret")
+        gen = secret["Properties"]["GenerateSecretString"]
+        assert json.loads(gen["SecretStringTemplate"]) == {"client_secret": "REPLACE-ME"}
+        assert gen["GenerateStringKey"] == "session_key"
+        assert "api_key" not in json.dumps(synth.compute)
+        assert "API key" not in secret["Properties"]["Description"]
+
+
 def test_authorizer_role_has_no_data_permissions(dev: Synth) -> None:
     _, auth = _function_by_handler(dev.compute, "app.authorizer.handler.handle")
     role_id = _role_id_of(auth)

@@ -7,19 +7,14 @@
 
 {% if added %}
 <div class="notice">
-  <p>Added.
-  {% if invite == "sent" %}WorkOS has emailed them a sign-in link.{% endif %}
-  Now send them the connector instructions below, however the family communicates.</p>
+  <p>Added. Now send them the connector instructions below, however the family communicates.</p>
 </div>
-{% if invite == "failed" %}
-<div class="warn">The sign-in email could not be sent through the WorkOS API — it has been logged. Invite them by hand from the WorkOS dashboard (Users → Invite), then send the block below.</div>
-{% endif %}
 {% endif %}
 
 {% if profile.status == "disabled" %}
 <div class="warn">Disabled. They cannot sign in here and every tool call answers as if they had no access. Their grants below are kept, not removed (grants outlive their granter), so enabling them restores exactly what they had.</div>
 {% elif profile.status == "invited" %}
-<p class="muted">Invited: they have not signed in yet. The status becomes <em>active</em> on their first sign-in.</p>
+<p class="muted">Status: invited — they haven't signed in yet. It becomes <em>active</em> on their first sign-in through the WorkOS invitation email.</p>
 {% endif %}
 
 <h2>Access</h2>
@@ -44,7 +39,7 @@
 {% include "admin/_revocation.html" %}
 
 <h2>Connector instructions</h2>
-<p>Copy this and send it to them. It only works after they have signed in once through the email link.</p>
+<p>Copy this and send it to them. It only works after they have signed in once through the invitation email.</p>
 <textarea readonly rows="9">{{ connector }}</textarea>
 
 {% if scope.is_root and not is_self %}

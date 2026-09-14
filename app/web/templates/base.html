@@ -11,7 +11,8 @@
   header { border-bottom:1px solid var(--line); padding:.75rem 1.25rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap }
   header a { color:var(--ink); text-decoration:none; font-weight:600 }
   header nav a { font-weight:400; color:var(--muted); margin-right:.9rem }
-  header form { margin-left:auto }
+  header .session { margin-left:auto; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap }
+  header .session form { margin:0 }
   main { max-width:860px; margin:0 auto; padding:1.5rem 1.25rem 4rem }
   a { color:var(--accent) }
   h1,h2,h3 { line-height:1.25 }
@@ -47,11 +48,17 @@
     <a href="{{ prefix }}/search">Search</a>
     <a href="{{ prefix }}/admin">Admin</a>
   </nav>
-  <form method="post" action="{{ prefix }}/logout">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="session">
     <span class="muted">{{ principal.display_name or principal.email }}</span>
-    <button class="btn" type="submit">Sign out</button>
-  </form>
+    <form method="post" action="{{ prefix }}/logout">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn" type="submit">Sign out</button>
+    </form>
+    <form method="post" action="{{ prefix }}/logout-all" title="Ends every session signed in as you, on every device and browser">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn" type="submit">Sign out everywhere</button>
+    </form>
+  </div>
   {% endif %}
 </header>
 <main>

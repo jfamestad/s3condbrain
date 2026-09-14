@@ -4,6 +4,11 @@ Pointer first, so every refusal leaves nothing written; the impact report is com
 against grants seeded through ``put_grant``; the half-complete recovery path is
 exercised by crashing the destination write and retrying the identical call.
 ``ListingIndex.refresh_child`` is replaced with a recorder (see test_archive_article).
+
+The boundary decision (§4.6, decided 14 Sep 2026): a move through which anyone gains
+access is ``403 boundary_change`` on the tool surface, with the report in the envelope
+and nothing written. Narrowing moves and same-folder renames proceed. ``perform`` with
+``allow_widening=True`` is the web application's path and is exercised directly here.
 """
 
 from __future__ import annotations
@@ -16,10 +21,18 @@ import pytest
 from app.auth.credentials import Shape
 from app.auth.types import Permission
 from app.config import SCOPE_WRITE
+from app.errors import ToolError
 from app.mcp.protocol import ToolContext
 from app.mcp.tools.archive_article import TOOL as ARCHIVE
 from app.mcp.tools.create_article import TOOL as CREATE
-from app.mcp.tools.move_article import HISTORY_NOTE, POINTER_BODY, TOOL, access_changes
+from app.mcp.tools.move_article import (
+    HISTORY_NOTE,
+    POINTER_BODY,
+    REFUSAL,
+    TOOL,
+    access_changes,
+    perform,
+)
 from app.mcp.tools.read_article import TOOL as READ
 from app.mcp.tools.update_article import TOOL as UPDATE
 from app.storage.articles import (
@@ -83,6 +96,8 @@ def test_descriptor_is_self_contained() -> None:
         "permission",
     ]
     assert TOOL.description.startswith("Relocate an article, leaving a permanent forward pointer")
+    assert "boundary_change" in TOOL.description and "web application" in TOOL.description
+    assert "boundary_change" in descriptor["inputSchema"]["description"]
 
 
 # --- the happy path, step by step ------------------------------------------------------
@@ -359,12 +374,13 @@ def test_grants_used_on_both_ends_are_audited(
     make_ctx: Callable[..., ToolContext],
     seed_grant: Callable[..., None],
 ) -> None:
-    seed_grant("user_both", "/private", Permission.WRITE)
-    seed_grant("user_both", "/public", Permission.OWN)
+    # own → write for the mover is a narrowing move, so the tool surface performs it.
+    seed_grant("user_both", "/private", Permission.OWN)
+    seed_grant("user_both", "/public", Permission.WRITE)
     mover = make_ctx("user_both")
     call(TOOL, mover, **{"from": FROM, "to": TO, "if_version": existing["version"]})
-    assert ("/private", "write") in mover.audit.grants_used
-    assert ("/public", "own") in mover.audit.grants_used
+    assert ("/private", "own") in mover.audit.grants_used
+    assert ("/public", "write") in mover.audit.grants_used
 
 
 def test_s3_access_denied_is_403(denied_ctx: ToolContext) -> None:
@@ -540,28 +556,166 @@ READER = "user_reader"
 EDITOR = "user_editor"
 
 
-def test_moving_into_a_granted_prefix_reports_gains(
+def test_move_that_gives_access_is_403_boundary_change_and_writes_nothing(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    minter: FakeMinter,
+    head_raw: Callable[..., Any],
+    get_raw: Callable[..., Any],
+    exists_raw: Callable[[str], bool],
+    listing_calls: list[ListingCall],
+) -> None:
+    """§4.6: widening is refused on the tool surface, with the report, and nothing
+    written — not the pointer, not the destination, not a listing."""
+    seed_grant(READER, "/public", Permission.READ)
+    before = head_raw(FROM)
+    minted_before = minter.mint_count
+    error = expect_error(
+        TOOL,
+        ctx,
+        403,
+        "boundary_change",
+        **{"from": FROM, "to": TO, "if_version": existing["version"]},
+    )
+    assert error.message == REFUSAL.format(who="1 person")
+    assert "web application" in error.message
+    assert error.structured()["access_changes"] == [
+        {"subject": READER, "direction": "gains", "permission": "read", "via": "/public"}
+    ]
+    assert head_raw(FROM)["VersionId"] == before["VersionId"]
+    assert parse(get_raw(FROM)).type == "doc"
+    assert not exists_raw(TO)
+    assert listing_calls == []
+    # The destination head and the source read each minted a credential; the
+    # refusal came after the read and minted nothing more.
+    assert minter.mint_count == minted_before + 2
+    assert minter.calls[-2:] == [(OWNER, Shape.WRITE, TO), (OWNER, Shape.WRITE, FROM)]
+
+
+def test_refusal_counts_the_people_who_would_gain(
     ctx: ToolContext,
     existing: dict[str, Any],
     seed_grant: Callable[..., None],
 ) -> None:
     seed_grant(READER, "/public", Permission.READ)
-    result = call(TOOL, ctx, **{"from": FROM, "to": TO, "if_version": existing["version"]})
+    seed_grant(EDITOR, "/public/racing", Permission.WRITE)
+    error = expect_error(
+        TOOL,
+        ctx,
+        403,
+        "boundary_change",
+        **{"from": FROM, "to": TO, "if_version": existing["version"]},
+    )
+    assert error.message.startswith("This move would give 2 people access.")
+    assert [c["subject"] for c in error.extra["access_changes"]] == [EDITOR, READER]
+
+
+def test_perform_with_allow_widening_is_the_console_path(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    get_raw: Callable[..., Any],
+) -> None:
+    """The web application, once a person has confirmed, runs the same steps with
+    the boundary check lifted and gets the report back."""
+    seed_grant(READER, "/public", Permission.READ)
+    result = perform(ctx, FROM, TO, existing["version"], allow_widening=True)
     assert result["access_changes"] == [
         {"subject": READER, "direction": "gains", "permission": "read", "via": "/public"}
     ]
+    assert result["seq"] == 2
+    assert parse(get_raw(TO)).body == BODY
+    assert parse(get_raw(FROM)).frontmatter["moved_to"] == TO
+
+
+def test_perform_without_allow_widening_matches_the_tool(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    exists_raw: Callable[[str], bool],
+) -> None:
+    seed_grant(READER, "/public", Permission.READ)
+    with pytest.raises(ToolError) as info:
+        perform(ctx, FROM, TO, existing["version"], allow_widening=False)
+    assert (info.value.status, info.value.code) == (403, "boundary_change")
+    assert not exists_raw(TO)
+
+
+def test_perform_validates_like_the_tool(ctx: ToolContext, minter: FakeMinter) -> None:
+    for args in (("/Private/x.md", TO), (FROM, "/public/index.md"), (FROM, FROM)):
+        with pytest.raises(ToolError) as info:
+            perform(ctx, args[0], args[1], "v", allow_widening=True)
+        assert info.value.status == 400
+    with pytest.raises(ToolError) as info:
+        perform(ctx, FROM, TO, "", allow_widening=True)
+    assert info.value.status == 400
+    assert minter.mint_count == 0
+
+
+def test_same_folder_rename_proceeds_with_no_changes(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    get_raw: Callable[..., Any],
+) -> None:
+    """A rename inside one folder crosses no boundary: the reader of /private could
+    read it before and can read it after, so nothing is reported and it proceeds."""
+    seed_grant(READER, "/private", Permission.READ)
+    renamed = "/private/notes/bar.md"
+    result = call(TOOL, ctx, **{"from": FROM, "to": renamed, "if_version": existing["version"]})
+    assert result["access_changes"] == []
+    assert result["seq"] == 2
+    assert parse(get_raw(renamed)).body == BODY
+    assert call(READ, make_reader(ctx, READER), path=renamed)["content"] == BODY
+
+
+def make_reader(ctx: ToolContext, subject: str) -> ToolContext:
+    return ToolContext(
+        subject=subject,
+        scopes=ctx.scopes,
+        grants=ctx.grants,
+        minter=ctx.minter,
+        settings=ctx.settings,
+    )
+
+
+def test_resume_completes_even_when_someone_gains(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    put_raw: Callable[..., str],
+    get_raw: Callable[..., Any],
+) -> None:
+    """The pointer already stands (a console move that died after step 5, say): the
+    source has committed, and the only way the article is readable anywhere is to
+    finish. The report still comes back so the caller can surface it."""
+    seed_grant(READER, "/public", Permission.READ)
+    put_raw(FROM, {"type": "pointer", "moved_to": TO, "seq": 2})
+    result = call(TOOL, ctx, **{"from": FROM, "to": TO, "if_version": existing["version"]})
+    assert result["seq"] == 2
+    assert result["access_changes"] == [
+        {"subject": READER, "direction": "gains", "permission": "read", "via": "/public"}
+    ]
+    assert parse(get_raw(TO)).body == BODY
 
 
 def test_moving_out_of_a_granted_prefix_reports_loses(
     ctx: ToolContext,
     seed_grant: Callable[..., None],
 ) -> None:
+    """Narrowing proceeds on the tool surface: the reader is left with the pointer,
+    which tells them it moved and where (§4.6, §5.3)."""
     seed_grant(READER, "/public", Permission.READ)
     created = call(CREATE, ctx, path=TO, content=BODY, frontmatter=FM)
     result = call(TOOL, ctx, **{"from": TO, "to": FROM, "if_version": created["version"]})
     assert result["access_changes"] == [
         {"subject": READER, "direction": "loses", "permission": "read", "via": "/public"}
     ]
+    assert call(READ, ctx, path=FROM)["content"] == BODY
+    reader = make_reader(ctx, READER)
+    assert call(READ, reader, path=TO)["kind"] == "forward_reference"
+    expect_error(READ, reader, 404, "not_found", path=FROM)
 
 
 def test_owner_of_root_sees_no_change(ctx: ToolContext, existing: dict[str, Any]) -> None:
@@ -611,11 +765,19 @@ def test_changes_are_sorted_by_subject_and_mixed(
     existing: dict[str, Any],
     seed_grant: Callable[..., None],
 ) -> None:
+    """One gain is enough to refuse; the envelope carries the whole report, losses
+    included, sorted by subject."""
     seed_grant("user_b", "/public/racing", Permission.WRITE)
     seed_grant("user_a", "/private/notes", Permission.OWN)
     seed_grant("user_c", "/", Permission.WRITE)  # unchanged either side
-    result = call(TOOL, ctx, **{"from": FROM, "to": TO, "if_version": existing["version"]})
-    assert result["access_changes"] == [
+    error = expect_error(
+        TOOL,
+        ctx,
+        403,
+        "boundary_change",
+        **{"from": FROM, "to": TO, "if_version": existing["version"]},
+    )
+    assert error.extra["access_changes"] == [
         {"subject": "user_a", "direction": "loses", "permission": "own", "via": "/private/notes"},
         {"subject": "user_b", "direction": "gains", "permission": "write", "via": "/public/racing"},
     ]

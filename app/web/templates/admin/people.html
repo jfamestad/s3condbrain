@@ -27,9 +27,12 @@
 {% include "admin/_revocation.html" %}
 
 <h2>Add a person</h2>
-<p>They will receive a sign-in email from WorkOS. After they sign in once on web or desktop, send them the connector instructions shown on their page.</p>
+<p><strong>Step 1 — create them in the WorkOS dashboard.</strong> Users → Create user, with their email; then Invite, which sends them the sign-in email. Copy the user id it shows (it starts with <code>user_</code>).</p>
+<p><strong>Step 2 — this form.</strong> Their account is recorded here with its first access. After they sign in once on web or desktop, send them the connector instructions shown on their page.</p>
 <form method="post" action="{{ prefix }}/admin/people">
   <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="subject">WorkOS user id</label>
+  <input type="text" id="subject" name="subject" required placeholder="user_01…" pattern="user_[A-Za-z0-9]+" autocomplete="off">
   <label for="email">Email</label>
   <input type="email" id="email" name="email" required>
   <label for="display_name">Name</label>
@@ -44,6 +47,6 @@
     {% endfor %}
   </select>
   <p class="muted">read: the article and its history · write: also create, update, move, archive · own: everything, and they can grant beneath.</p>
-  <p><button class="btn primary" type="submit">Add and send the sign-in email</button></p>
+  <p><button class="btn primary" type="submit">Add</button></p>
 </form>
 {% endblock %}

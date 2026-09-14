@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Move · Admin · Wiki{% endblock %}
+{% block content %}
+{% if not scope.owns_anything %}
+{% include "admin/_nothing.html" %}
+{% else %}
+{% include "admin/_nav.html" %}
+<h1>Move an article</h1>
+{% if done %}
+<div class="notice">Moved <code>{{ from_path }}</code> to <code>{{ to_path }}</code>. A pointer at the old path says where it went.</div>
+{% if changes %}
+<h2>Who gained and lost access</h2>
+<ul>
+  {% for c in changes %}
+  <li>{{ c.text }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>Nobody's access changed.</p>
+{% endif %}
+<p class="muted">{{ history_note }}</p>
+<p><a href="{{ prefix }}/a{{ to_path }}">Open the article</a> · <a href="{{ prefix }}/admin/move">Move another</a></p>
+{% else %}
+{% if error %}
+<div class="warn">{{ error }}</div>
+{% endif %}
+<p>Every grant names a place in the tree, so moving an article changes who can read it. A move that would give anyone access is refused to agents; it is done here, where you see who gains and who loses before you confirm. The old path keeps a pointer to the new one, and the article's earlier versions stay behind it.</p>
+<form method="post" action="{{ prefix }}/admin/move">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="from">From</label>
+  <input type="text" id="from" name="from" required value="{{ from_path }}" placeholder="/family/private/notes.md">
+  <label for="to">To</label>
+  <input type="text" id="to" name="to" required value="{{ to_path }}" placeholder="/family/shared/notes.md">
+  <p class="muted">Absolute article paths, lowercase, ending in <code>.md</code>. You need write access on both, and you must own the destination's folder.</p>
+  <p><button class="btn" type="submit" name="action" value="preview">Preview the move</button></p>
+</form>
+{% if preview %}
+<h2>What this move changes</h2>
+{% if changes %}
+<ul>
+  {% for c in changes %}
+  <li>{{ c.text }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>Nobody gains or loses access — the move stays inside the same permission boundary.</p>
+{% endif %}
+{% if gains %}
+<div class="warn">{{ gains }} {{ 'person' if gains == 1 else 'people' }} will be able to read this article who cannot today. Its earlier versions stay at <code>{{ from_path }}</code> and are not readable from the new location.</div>
+{% endif %}
+{% if resuming %}
+<div class="notice">The pointer at <code>{{ from_path }}</code> already names <code>{{ to_path }}</code>: an earlier move stopped half-way, and confirming finishes it.</div>
+{% endif %}
+<form method="post" action="{{ prefix }}/admin/move">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="from" value="{{ from_path }}">
+  <input type="hidden" name="to" value="{{ to_path }}">
+  <input type="hidden" name="if_version" value="{{ if_version }}">
+  <p><button class="btn primary" type="submit" name="action" value="confirm">Confirm the move</button></p>
+</form>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

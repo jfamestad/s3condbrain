@@ -10,6 +10,8 @@ whether an email they type belongs to anyone.
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import re
 from typing import Any
 
@@ -18,7 +20,6 @@ import pytest
 from app.auth.admin import GrantAdmin
 from app.auth.types import Grant, Permission
 from app.web import session as sess
-from app.web import workos as workos_mod
 from app.web.audit import AuditResult, AuditRow
 from app.web.views import admin as admin_view
 from tests.unit.web.conftest import SUBJECT, call, csrf_for, event
@@ -26,6 +27,7 @@ from tests.unit.web.conftest import SUBJECT, call, csrf_for, event
 JOSH = "user_josh"
 DANA = "user_dana"
 PAT = "user_pat"
+NEW = "user_01NEW"  # an id the operator just created in the WorkOS dashboard
 NOW = "2026-09-13T12:00:00+00:00"
 REVOCATION = admin_view.REVOCATION_SENTENCE
 
@@ -74,40 +76,6 @@ def get(path: str, cookie: str, query: dict[str, str] | None = None) -> dict[str
 def post(path: str, cookie: str, form: dict[str, str], *, csrf: bool = True) -> dict[str, Any]:
     data = {**form, "csrf": csrf_for(cookie)} if csrf else dict(form)
     return call(event("POST", path, cookies={sess.SESSION_COOKIE: cookie}, form=data))
-
-
-class FakeWorkOS:
-    """Stands in for ``WorkOSClient``; records calls, never touches the network."""
-
-    instances: list[FakeWorkOS] = []
-
-    def __init__(self, api_key: str, *, existing: dict[str, str] | None = None, fail_invite=False):
-        if api_key in ("", "REPLACE-ME"):
-            raise RuntimeError(workos_mod.NOT_CONFIGURED)
-        self.existing = existing or {}
-        self.fail_invite = fail_invite
-        self.created: list[tuple[str, str, str]] = []
-        self.invited: list[str] = []
-        FakeWorkOS.instances.append(self)
-
-    def find_user_by_email(self, email: str) -> str | None:
-        return self.existing.get(email)
-
-    def create_user(self, email: str, first_name: str, last_name: str) -> str:
-        self.created.append((email, first_name, last_name))
-        return "user_new01"
-
-    def send_invitation(self, email: str) -> None:
-        if self.fail_invite:
-            raise workos_mod.WorkOSError(400, "invalid_request", "nope")
-        self.invited.append(email)
-
-
-@pytest.fixture
-def fake_workos(monkeypatch: pytest.MonkeyPatch) -> type[FakeWorkOS]:
-    FakeWorkOS.instances = []
-    monkeypatch.setattr(admin_view, "WorkOSClient", FakeWorkOS)
-    return FakeWorkOS
 
 
 # --- sentences ------------------------------------------------------------------------------
@@ -193,7 +161,7 @@ def test_people_root_sees_everyone_with_sentences(as_root: GrantAdmin, cookie: s
     assert "Pat can read everything under /private (granted by Josh, 2026-09-13)" in body
     assert "Josh owns everything and can grant access" in body
     assert "Add a person" in body and REVOCATION in body
-    assert "sign-in email from WorkOS" in body
+    assert "WorkOS dashboard" in body and 'name="subject"' in body
 
 
 def test_people_racing_owner_sees_only_people_with_access_there(
@@ -236,16 +204,35 @@ def test_person_page_for_self_offers_no_disable(as_root: GrantAdmin, cookie: str
     assert "this is you" in body and "Disable" not in body
 
 
-# --- adding a person (§15.2) -------------------------------------------------------------
+# --- adding a person (§15.2; §11.6 "Adding a person") ---------------------------------
 
 
-def test_add_person_creates_invites_grants_and_shows_connector_block(
-    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], settings: Any
+def test_add_person_makes_no_external_calls() -> None:
+    """The operator creates people in the WorkOS dashboard; the console only records
+    them (§11.6). There is no client to mock: the module imports no HTTP library and
+    the management-key client no longer exists anywhere."""
+    source = inspect.getsource(admin_view)
+    assert "httpx" not in source
+    assert "app.web.workos" not in source
+    assert not hasattr(admin_view, "WorkOSClient")
+    assert importlib.util.find_spec("app.web.workos") is None
+
+
+def test_people_page_explains_dashboard_then_form(as_racing: GrantAdmin, cookie: str) -> None:
+    body = get("/app/admin/people", cookie)["body"]
+    assert "WorkOS dashboard" in body and "Create user" in body and "Invite" in body
+    assert 'name="subject"' in body and 'name="email"' in body
+    assert "send the sign-in email" not in body
+
+
+def test_add_person_records_invited_profile_grants_and_shows_connector_block(
+    as_racing: GrantAdmin, cookie: str, settings: Any
 ) -> None:
     out = post(
         "/app/admin/people",
         cookie,
         {
+            "subject": NEW,
             "email": "new@example.com",
             "display_name": "New Person",
             "node": "/racing/notes",
@@ -253,119 +240,123 @@ def test_add_person_creates_invites_grants_and_shows_connector_block(
         },
     )
     assert out["statusCode"] == 303
-    assert out["headers"]["Location"] == "/app/admin/people/user_new01?added=1&invite=sent"
-    wk = fake_workos.instances[-1]
-    assert wk.created == [("new@example.com", "New", "Person")]
-    assert wk.invited == ["new@example.com"]
-    prof = as_racing.get_profile("user_new01")
-    assert prof is not None and prof.status == "invited" and prof.email == "new@example.com"
-    grants = as_racing.grants_of("user_new01")
+    assert out["headers"]["Location"] == f"/app/admin/people/{NEW}?added=1"
+    prof = as_racing.get_profile(NEW)
+    assert prof is not None and prof.status == "invited"
+    assert prof.email == "new@example.com" and prof.display_name == "New Person"
+    grants = as_racing.grants_of(NEW)
     assert len(grants) == 1
     assert grants[0].node == "/racing/notes" and grants[0].permission is Permission.READ
     assert grants[0].granted_by == SUBJECT
-    body = get(out["headers"]["Location"].split("?")[0], cookie, {"added": "1", "invite": "sent"})[
-        "body"
-    ]
+    body = get(f"/app/admin/people/{NEW}", cookie, {"added": "1"})["body"]
     assert settings.canonical_mcp_url in body
-    assert "emailed them a sign-in link" in body
+    assert "Added." in body
+    assert "Status: invited" in body and "haven't signed in yet" in body
     assert "New Person can read everything under /racing/notes" in body
+    for stale in ("emailed them a sign-in link", "invitation sent", "could not be sent"):
+        assert stale not in body
 
 
-def test_add_person_reuses_existing_workos_user(
-    as_root: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], monkeypatch: Any
-) -> None:
-    monkeypatch.setattr(
-        admin_view,
-        "WorkOSClient",
-        lambda key: FakeWorkOS(key, existing={"old@example.com": "user_old01"}),
-    )
-    out = post(
-        "/app/admin/people",
-        cookie,
-        {"email": "old@example.com", "display_name": "Old", "node": "/", "permission": "write"},
-    )
-    assert out["statusCode"] == 303 and "user_old01" in out["headers"]["Location"]
-    assert fake_workos.instances[-1].created == []
-    assert as_root.get_profile("user_old01") is not None
-
-
-def test_add_person_outside_scope_is_403_before_workos(
-    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+def test_add_person_outside_scope_is_403_before_any_write(
+    as_racing: GrantAdmin, cookie: str
 ) -> None:
     out = post(
         "/app/admin/people",
         cookie,
-        {"email": "x@example.com", "display_name": "X", "node": "/private", "permission": "read"},
+        {
+            "subject": NEW,
+            "email": "x@example.com",
+            "display_name": "X",
+            "node": "/private",
+            "permission": "read",
+        },
     )
     assert out["statusCode"] == 403
-    assert fake_workos.instances == []
+    assert as_racing.get_profile(NEW) is None and as_racing.grants_of(NEW) == []
 
 
-def test_add_person_owner_of_nothing_is_403(
-    as_nobody: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
-) -> None:
+def test_add_person_owner_of_nothing_is_403(as_nobody: GrantAdmin, cookie: str) -> None:
     out = post(
         "/app/admin/people",
         cookie,
-        {"email": "x@example.com", "display_name": "X", "node": "/racing", "permission": "read"},
+        {
+            "subject": NEW,
+            "email": "x@example.com",
+            "display_name": "X",
+            "node": "/racing",
+            "permission": "read",
+        },
     )
-    assert out["statusCode"] == 403 and fake_workos.instances == []
+    assert out["statusCode"] == 403
+    assert as_nobody.get_profile(NEW) is None
 
 
-LOCATION_SHAPE = re.compile(r"^/app/admin/people/user_[^/?]+\?added=1&invite=(sent|none)$")
+LOCATION_SHAPE = re.compile(r"^/app/admin/people/user_[^/?]+\?added=1$")
 
 
-def test_add_person_existing_member_is_granted_like_a_new_one(
-    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+def test_add_person_existing_subject_is_granted_like_a_new_one(
+    as_racing: GrantAdmin, cookie: str
 ) -> None:
-    """Pat exists but holds nothing under /racing. Adding her there is a grant and a
-    303 to her page — the same shape as a brand-new account — so the owner is never
-    told whether the email was known."""
+    """Pat exists but holds nothing under /racing. Adding her id there is a grant and
+    a 303 to her page — the same shape as a brand-new account — so the owner is
+    never told whether the id was known. Her profile is left exactly as it was."""
     form = {"display_name": "Someone", "node": "/racing/notes", "permission": "read"}
-    existing = post("/app/admin/people", cookie, {**form, "email": "PAT@example.com"})
+    existing = post(
+        "/app/admin/people", cookie, {**form, "subject": PAT, "email": "PAT@example.com"}
+    )
     assert existing["statusCode"] == 303
-    assert existing["headers"]["Location"] == f"/app/admin/people/{PAT}?added=1&invite=none"
-    assert fake_workos.instances == []  # no WorkOS user, no invitation
+    assert existing["headers"]["Location"] == f"/app/admin/people/{PAT}?added=1"
     rows = {g.node: g for g in as_racing.grants_of(PAT)}
     assert rows["/racing/notes"].permission is Permission.READ
     assert rows["/racing/notes"].granted_by == SUBJECT
-    assert as_racing.get_profile(PAT).status == "active"  # untouched
-    page = get(f"/app/admin/people/{PAT}", cookie, {"added": "1", "invite": "none"})
+    pat = as_racing.get_profile(PAT)
+    assert pat is not None and pat.status == "active"  # untouched
+    assert pat.email == "pat@example.com" and pat.display_name == "Pat"
+    page = get(f"/app/admin/people/{PAT}", cookie, {"added": "1"})
     assert page["statusCode"] == 200  # legitimately in scope now
     assert "Pat can read everything under /racing/notes" in page["body"]
-    assert "emailed them a sign-in link" not in page["body"]
+    assert "Status: invited" not in page["body"]
 
-    new = post("/app/admin/people", cookie, {**form, "email": "new@example.com"})
+    new = post("/app/admin/people", cookie, {**form, "subject": NEW, "email": "new@example.com"})
     assert new["statusCode"] == 303
-    assert new["headers"]["Location"] == "/app/admin/people/user_new01?added=1&invite=sent"
-    assert fake_workos.instances[-1].created == [("new@example.com", "Someone", "")]
-    assert fake_workos.instances[-1].invited == ["new@example.com"]
+    assert new["headers"]["Location"] == f"/app/admin/people/{NEW}?added=1"
     assert existing["statusCode"] == new["statusCode"]
     assert LOCATION_SHAPE.match(existing["headers"]["Location"])
     assert LOCATION_SHAPE.match(new["headers"]["Location"])
 
 
 def test_add_person_existing_member_root_gets_the_same_grant(
-    as_root: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+    as_root: GrantAdmin, cookie: str
 ) -> None:
     out = post(
         "/app/admin/people",
         cookie,
-        {"email": "DANA@example.com", "display_name": "D", "node": "/", "permission": "write"},
+        {
+            "subject": DANA,
+            "email": "dana@example.com",
+            "display_name": "D",
+            "node": "/",
+            "permission": "write",
+        },
     )
     assert out["statusCode"] == 303
-    assert out["headers"]["Location"] == f"/app/admin/people/{DANA}?added=1&invite=none"
+    assert out["headers"]["Location"] == f"/app/admin/people/{DANA}?added=1"
     assert "already a member" not in out.get("body", "")
-    assert fake_workos.instances == []
     rows = {g.node: g for g in as_root.grants_of(DANA)}
     assert rows["/"].permission is Permission.WRITE and rows["/"].granted_by == SUBJECT
+    assert as_root.get_profile(DANA).display_name == "Dana"  # type: ignore[union-attr]
 
 
 def test_add_person_disabled_member_is_the_one_refusal_for_every_owner(
-    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+    as_racing: GrantAdmin, cookie: str
 ) -> None:
     as_racing.set_status(PAT, "disabled")
-    form = {"email": "pat@example.com", "node": "/racing/notes", "permission": "read"}
+    form = {
+        "subject": PAT,
+        "email": "pat@example.com",
+        "node": "/racing/notes",
+        "permission": "read",
+    }
     subtree = post("/app/admin/people", cookie, form)
     as_racing.store.put_grant(Grant(SUBJECT, "/", Permission.OWN, JOSH, NOW))  # now root
     root = post("/app/admin/people", cookie, form)
@@ -374,85 +365,51 @@ def test_add_person_disabled_member_is_the_one_refusal_for_every_owner(
     assert subtree["body"] == root["body"]
     for word in ("Pat", PAT, "pat@example.com", "disabled", "already a member"):
         assert word not in subtree["body"], word
-    assert fake_workos.instances == []
     assert [g.node for g in as_racing.grants_of(PAT)] == ["/private"]
 
 
-def test_add_person_existing_workos_user_with_profile_is_granted_too(
-    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], monkeypatch: Any
+def test_add_person_email_of_another_account_is_the_same_refusal(
+    as_racing: GrantAdmin, cookie: str
 ) -> None:
-    """The typed email is new to us but WorkOS maps it to a subject that already has
-    a profile (their email changed upstream). Same answer as an email we knew."""
-    monkeypatch.setattr(
-        admin_view,
-        "WorkOSClient",
-        lambda key: FakeWorkOS(key, existing={"pat.new@example.com": PAT}),
-    )
+    """A new id with an email that already belongs to a different subject: one
+    profile per person, refused with the same sentence a disabled account gets, so
+    the answer confirms nothing about whose email it is. Nothing is written."""
     out = post(
         "/app/admin/people",
         cookie,
-        {"email": "pat.new@example.com", "node": "/racing/notes", "permission": "read"},
+        {"subject": NEW, "email": "PAT@example.com", "node": "/racing/notes", "permission": "read"},
     )
-    assert out["statusCode"] == 303
-    assert out["headers"]["Location"] == f"/app/admin/people/{PAT}?added=1&invite=none"
-    assert fake_workos.instances[-1].created == [] and fake_workos.instances[-1].invited == []
-    assert {g.node for g in as_racing.grants_of(PAT)} == {"/private", "/racing/notes"}
-    assert as_racing.get_profile(PAT).email == "pat@example.com"  # profile untouched
+    assert out["statusCode"] == 400
+    assert admin_view.EMAIL_NOT_ADDABLE in out["body"]
+    for word in ("Pat", PAT, "disabled", "already a member"):
+        assert word not in out["body"], word
+    assert as_racing.get_profile(NEW) is None and as_racing.grants_of(NEW) == []
+    assert [g.node for g in as_racing.grants_of(PAT)] == ["/private"]
 
 
 @pytest.mark.parametrize(
     "form",
     [
-        {"email": "not-an-email", "node": "/racing", "permission": "read"},
-        {"email": "a@b.co", "node": "racing", "permission": "read"},
-        {"email": "a@b.co", "node": "/Racing", "permission": "read"},
-        {"email": "a@b.co", "node": "/racing", "permission": "admin"},
+        {"email": "a@b.co", "node": "/racing", "permission": "read"},  # no subject at all
+        {"subject": "", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": "01NEW", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": "user_", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": "user_01 NEW", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": "user_01-NEW", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": "User_01NEW", "email": "a@b.co", "node": "/racing", "permission": "read"},
+        {"subject": NEW, "email": "not-an-email", "node": "/racing", "permission": "read"},
+        {"subject": NEW, "email": "a@b.co", "node": "racing", "permission": "read"},
+        {"subject": NEW, "email": "a@b.co", "node": "/Racing", "permission": "read"},
+        {"subject": NEW, "email": "a@b.co", "node": "/racing", "permission": "admin"},
     ],
 )
 def test_add_person_bad_input_is_400(
-    as_root: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], form: dict[str, str]
+    as_root: GrantAdmin, cookie: str, form: dict[str, str]
 ) -> None:
+    before = {p.subject for p in as_root.list_profiles()}
     assert post("/app/admin/people", cookie, form)["statusCode"] == 400
-    assert fake_workos.instances == []
-
-
-def test_add_person_without_workos_key_is_friendly(
-    as_root: GrantAdmin, cookie: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from app.web import app as web_app
-    from app.web import secrets as secrets_mod
-
-    real = secrets_mod.load("")
-    monkeypatch.setattr(
-        web_app.secrets_mod,
-        "load",
-        lambda arn, client=None: secrets_mod.WebSecrets(real.client_secret, "", real.session_key),
-    )
-    out = post(
-        "/app/admin/people",
-        cookie,
-        {"email": "x@example.com", "display_name": "X", "node": "/", "permission": "read"},
-    )
-    assert out["statusCode"] == 503
-    assert "WorkOS API key not configured" in out["body"] and "docs/DEPLOY.md" in out["body"]
-    assert as_root.list_profiles() == [p for p in as_root.list_profiles()]  # nothing added
-    assert all(p.email != "x@example.com" for p in as_root.list_profiles())
-
-
-def test_add_person_invitation_failure_still_shows_block_with_warning(
-    as_root: GrantAdmin, cookie: str, monkeypatch: pytest.MonkeyPatch, settings: Any
-) -> None:
-    monkeypatch.setattr(admin_view, "WorkOSClient", lambda key: FakeWorkOS(key, fail_invite=True))
-    out = post(
-        "/app/admin/people",
-        cookie,
-        {"email": "x@example.com", "display_name": "X", "node": "/", "permission": "read"},
-    )
-    assert out["statusCode"] == 303 and out["headers"]["Location"].endswith("invite=failed")
-    body = get("/app/admin/people/user_new01", cookie, {"added": "1", "invite": "failed"})["body"]
-    assert "could not be sent" in body and "WorkOS dashboard" in body
-    assert settings.canonical_mcp_url in body
-    assert as_root.get_profile("user_new01") is not None
+    assert {p.subject for p in as_root.list_profiles()} == before
+    assert as_root.grants_of(NEW) == []
 
 
 # --- status -----------------------------------------------------------------------------------
@@ -807,19 +764,22 @@ def test_delete_runbook_owner_of_nothing(as_nobody: GrantAdmin, cookie: str) -> 
 @pytest.mark.parametrize(
     ("path", "form"),
     [
-        ("/app/admin/people", {"email": "a@b.co", "node": "/", "permission": "read"}),
+        (
+            "/app/admin/people",
+            {"subject": NEW, "email": "a@b.co", "node": "/", "permission": "read"},
+        ),
         (f"/app/admin/people/{DANA}/status", {"status": "disabled"}),
         ("/app/admin/grants", {"subject": DANA, "node": "/", "permission": "read"}),
         ("/app/admin/grants/revoke", {"subject": DANA, "node": "/racing/setup"}),
     ],
 )
 def test_post_without_csrf_is_403(
-    as_root: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], path: str, form: dict[str, str]
+    as_root: GrantAdmin, cookie: str, path: str, form: dict[str, str]
 ) -> None:
     assert post(path, cookie, form, csrf=False)["statusCode"] == 403
     assert as_root.get_profile(DANA).status == "active"
     assert len(as_root.grants_of(DANA)) == 1
-    assert fake_workos.instances == []
+    assert as_root.get_profile(NEW) is None
 
 
 def test_admin_requires_login() -> None:

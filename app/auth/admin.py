@@ -21,7 +21,8 @@ Table rows this module touches (§8.5):
     pk = "U#<subject>"  sk = "<node>"   permission, granted_by, granted_at,
                                         gs1pk = "N#<node>",  gs1sk = "<subject>"
     pk = "U#<subject>"  sk = "PROFILE"  email, display_name, status, created_at,
-                                        gs1pk = "PROFILE",   gs1sk = "<email>"
+                                        session_epoch, gs1pk = "PROFILE",
+                                        gs1sk = "<email>"
 
 The second ``gs1pk`` shape lets ``list_profiles`` be a query on the same index the
 grant rows use for "who can reach this node", so nothing here scans except
@@ -64,6 +65,7 @@ class Profile:
     display_name: str
     status: str = "active"  # active | invited | disabled
     created_at: str = ""
+    session_epoch: int = 0  # bumped by "Sign out everywhere" (§11.6); cookies record it
 
 
 class NotAnOwner(Exception):
@@ -106,6 +108,7 @@ def _profile_from_item(item: dict[str, Any]) -> Profile:
         display_name=item.get("display_name", ""),
         status=item.get("status", "active"),
         created_at=item.get("created_at", ""),
+        session_epoch=int(item.get("session_epoch", 0)),
     )
 
 
@@ -284,6 +287,7 @@ class GrantAdmin:
                     "display_name": display_name,
                     "status": status,
                     "created_at": profile.created_at,
+                    "session_epoch": 0,
                     "gs1pk": _PROFILE_GSI_PK,
                     "gs1sk": email,
                 },
@@ -331,6 +335,32 @@ class GrantAdmin:
                 raise ValueError(f"no profile for {subject}") from exc
             raise
         logger.info("admin_write", action="set_status", subject=subject, status=status)
+
+    def bump_session_epoch(self, subject: str) -> int:
+        """ "Sign out everywhere" (§11.6): advance the profile's ``session_epoch`` so
+        every cookie issued under the old value is refused on its next request.
+
+        Returns:
+            The new epoch.
+
+        Raises:
+            ValueError: no profile exists for ``subject``.
+        """
+        try:
+            response = self.table.update_item(
+                Key={"pk": f"{_SUBJECT_PREFIX}{subject}", "sk": _PROFILE_SK},
+                UpdateExpression="ADD session_epoch :one",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeValues={":one": 1},
+                ReturnValues="UPDATED_NEW",
+            )
+        except ClientError as exc:
+            if _error_code(exc) == _CONDITION_FAILED:
+                raise ValueError(f"no profile for {subject}") from exc
+            raise
+        epoch = int(response["Attributes"]["session_epoch"])
+        logger.info("admin_write", action="session_epoch", subject=subject, epoch=epoch)
+        return epoch
 
     # --- helpers ---------------------------------------------------------------------
 
