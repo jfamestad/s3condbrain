@@ -34,7 +34,7 @@ failure this list is for.
       `workos_web_client_id` in `infra/config.py` for this env ([§3](#3-infraconfigpy);
       the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 7). An
       empty client id is a synth warning in dev and a synth **error** in prod.
-- [ ] **4. Certificate or hosted zone.** Either `hosted_zone_name` is set, or an ACM
+- [ ] **Certificate, by hand (never CI):** `make cert-deploy ENV=<env>`; it pauses at "waiting for validation" — run `make cert-status ENV=<env>` in another shell, add the CNAME it prints at your DNS provider, and the deploy completes when ACM sees it (minutes to an hour). The ARN lands in SSM at `/wiki/<env>/certificate-arn`; the API stack reads it, so `CERT_ARN=` is no longer needed. Renewals are automatic while the CNAME stays. (Section [Certificate](#certificate).)
       certificate exists in `us-west-2` for the exact hostname and its ARN is at hand
       as `CERT_ARN` ([§2](#2-domain-and-certificate)).
 - [ ] **5. `make synth ENV=<env> CERT_ARN=...`** succeeds, and the
@@ -234,6 +234,28 @@ decide whether WorkOS is acceptable at all (§2). In order:
    key can change any user's email address, and nothing needs it — people are
    created in the dashboard, by you, and recorded in the console
    ([§6](#6-first-owner), "Adding everyone else").
+
+## Certificate
+
+The one piece of infrastructure deployed by a person and never by CI: a regional ACM
+certificate for the environment's domain, in its own CDK app (`infra/cert_app.py`,
+stack `infra/stacks/certificate.py`).
+
+```sh
+make cert-deploy ENV=dev        # requests the certificate; CloudFormation waits for validation
+make cert-status ENV=dev        # in another shell: prints Status and the validation CNAME
+# add the CNAME (name → value) at the DNS provider for famestad.com; wait for Status: ISSUED
+```
+
+The deploy completes on its own once ACM validates. The stack publishes the ARN to SSM
+(`/wiki/<env>/certificate-arn`); `make deploy` reads it at deploy time. To use a
+certificate issued elsewhere instead, pass `CERT_ARN=arn:aws:acm:...` to `make synth`/
+`make deploy` — the override wins over the parameter.
+
+Why it is separate: issuance needs a human to place a DNS record, and an automated
+redeploy must never be able to replace or delete the certificate the live domain is
+using. The stack's certificate carries `Retain`, and neither `make deploy` nor the CI
+synth includes it. The same account guard applies (`infra/config.py`).
 
 ## 6. First owner
 

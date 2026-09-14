@@ -4,7 +4,8 @@ Context keys:
     env              ``dev`` (default) or ``prod``.
     codeRoot         Directory holding ``authorizer/`` and ``mcp/`` (default ``build``).
     canonicalMcpUrl  Required when the environment has no ``domain``.
-    certificateArn   Required when ``domain`` is set but ``hosted_zone_name`` is not.
+    certificateArn   Optional override; without it the API stack reads the ARN that
+                     ``infra/cert_app.py`` (deployed by hand) published to SSM.
     alertEmail       Optional subscriber for the budget notification and the alerts topic.
     workosWebClientId
                      The web application's AuthKit client id when ``infra/config.py``

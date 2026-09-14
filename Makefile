@@ -7,7 +7,9 @@ CDK ?= npx cdk
 CERT_ARN ?=
 CDK_CTX := -c env=$(ENV) $(if $(CERT_ARN),-c certificateArn=$(CERT_ARN),)
 
-.PHONY: help sync test lint typecheck build synth deploy destroy security aws-tests clean grant-owner
+CERT_APP := --app "uv run python -m infra.cert_app"
+
+.PHONY: help sync test lint typecheck build synth deploy destroy security aws-tests clean grant-owner cert-synth cert-deploy cert-status
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -47,6 +49,19 @@ deploy: build ## cdk deploy all stacks for ENV
 
 destroy: ## cdk destroy for ENV (dev only — prod buckets are retained)
 	$(CDK) destroy $(CDK_CTX) --all
+
+cert-synth: ## Synth the certificate stack (separate app; never run by CI)
+	$(CDK) $(CERT_APP) synth -c env=$(ENV)
+
+cert-deploy: ## Issue the ACM certificate for ENV by hand; then add the CNAME it prints (make cert-status)
+	$(CDK) $(CERT_APP) deploy -c env=$(ENV) --require-approval never
+
+cert-status: ## Show the certificate's validation CNAME and status for ENV
+	@arn=$$(aws acm list-certificates --region $$(uv run python -c "from infra.config import load; print(load('$(ENV)').region)") \
+	  --query "CertificateSummaryList[?DomainName=='$$(uv run python -c "from infra.config import load; print(load('$(ENV)').domain)")'].CertificateArn | [0]" --output text); \
+	if [ -z "$$arn" ] || [ "$$arn" = "None" ]; then echo "no certificate requested yet for $(ENV); run make cert-deploy"; exit 1; fi; \
+	aws acm describe-certificate --certificate-arn "$$arn" \
+	  --query "Certificate.{Status:Status,Domain:DomainName,CNAME:DomainValidationOptions[0].ResourceRecord}" --output table
 
 security: ## §12.8 checks against a deployed instance (WIKI_BASE_URL required)
 	uv run pytest -m security -o addopts=""

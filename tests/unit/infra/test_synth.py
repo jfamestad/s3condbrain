@@ -616,18 +616,29 @@ def test_custom_domain_from_certificate_arn(dev: Synth) -> None:
     assert "DomainTarget" in dev.api["Outputs"]
 
 
-def test_missing_certificate_arn_is_a_synth_error(tmp_path: Path) -> None:
-    app = cdk.App(context={"env": "dev"})
-    cfg = load("dev")
-    aws_env = cdk.Environment(account=cfg.account, region=cfg.region)
-    storage = StorageStack(app, "storage", cfg=cfg, env=aws_env)
-    compute = ComputeStack(
-        app, "compute", cfg=cfg, storage=storage, code_root=_build_code_root(tmp_path), env=aws_env
-    )
-    api = ApiStack(app, "api", cfg=cfg, compute=compute, env=aws_env)
-    errors = [m.data for m in api.node.metadata if m.type == "aws:cdk:error"]
-    assert errors and "certificateArn" in str(errors[0])
-    assert not _resources(Template.from_stack(api).to_json(), "AWS::ApiGateway::DomainName")
+def test_certificate_comes_from_ssm_when_no_context_and_no_zone(tmp_path: Path) -> None:
+    """The certificate stack is deployed by hand and publishes its ARN to SSM; without
+    a ``certificateArn`` override the API resolves that parameter at deploy time."""
+    app = _app("dev", tmp_path)  # no certificateArn context
+    build(app)
+    api = app.synth().get_stack_by_name("wiki-dev-api").template
+    domains = _resources(api, "AWS::ApiGateway::DomainName")
+    assert len(domains) == 1
+    [domain] = domains.values()
+    # CDK renders a deploy-time SSM lookup as a CloudFormation parameter of type
+    # AWS::SSM::Parameter::Value<String> whose Default is the parameter name.
+    ssm_params = {
+        k: v
+        for k, v in api.get("Parameters", {}).items()
+        if v.get("Type") == "AWS::SSM::Parameter::Value<String>"
+    }
+    assert len(ssm_params) == 1, sorted(api.get("Parameters", {}))
+    [(param_id, param)] = ssm_params.items()
+    assert param["Default"] == "/wiki/dev/certificate-arn"
+    assert domain["Properties"]["RegionalCertificateArn"] == {"Ref": param_id}
+    assert not [
+        v for v in api["Resources"].values() if v["Type"] == "AWS::CertificateManager::Certificate"
+    ], "the API stack must never issue a certificate itself"
 
 
 def test_budget(dev: Synth, tmp_path: Path) -> None:

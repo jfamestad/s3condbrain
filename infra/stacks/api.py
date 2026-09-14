@@ -47,9 +47,11 @@ from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_route53 as route53
 from aws_cdk import aws_route53_targets as targets
+from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from infra.config import EnvConfig
+from infra.stacks.certificate import parameter_name as certificate_parameter_name
 from infra.stacks.compute import ComputeStack
 
 STAGE_NAME = "v1"
@@ -284,14 +286,14 @@ class ApiStack(cdk.Stack):
                 validation=acm.CertificateValidation.from_dns(zone),
             )
         else:
-            cert_arn = self.node.try_get_context("certificateArn")
-            if not cert_arn:
-                cdk.Annotations.of(self).add_error(
-                    f"cfg.domain={self.cfg.domain!r} has no hosted zone; pass "
-                    "-c certificateArn=arn:aws:acm:... (a regional certificate for that "
-                    "name) or set hosted_zone_name to have one issued."
+            # The certificate is issued by hand in its own stack (infra/stacks/certificate.py)
+            # and published to SSM; resolved at deploy time, so CI can synth without it.
+            # `-c certificateArn=` still overrides (CI placeholder, or an imported cert).
+            cert_arn = self.node.try_get_context("certificateArn") or (
+                ssm.StringParameter.value_for_string_parameter(
+                    self, certificate_parameter_name(self.cfg.name)
                 )
-                return
+            )
             certificate = acm.Certificate.from_certificate_arn(self, "Certificate", cert_arn)
 
         domain = apigateway.DomainName(
