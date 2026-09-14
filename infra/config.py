@@ -67,7 +67,7 @@ class EnvConfig:
 ENVIRONMENTS: dict[str, EnvConfig] = {
     "dev": EnvConfig(
         name="dev",
-        account=None,  # dev may float: whatever account the CLI's credentials resolve to
+        account="588747760390",  # pinned; synth refuses credentials that resolve elsewhere
         region="us-west-2",
         domain="wiki-dev.famestad.com",
         hosted_zone_name=None,

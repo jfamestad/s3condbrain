@@ -474,9 +474,10 @@ def test_eventbridge_may_publish_only_for_this_stacks_rules(dev: Synth) -> None:
     assert sorted(json.dumps(a, sort_keys=True) for a in allowed) == sorted(
         json.dumps(a, sort_keys=True) for a in rule_arns
     )
-    assert events_stmt["Condition"]["StringEquals"]["aws:SourceAccount"] == {
-        "Ref": "AWS::AccountId"
-    }
+    # A pinned env resolves the account to a literal at synth; an unpinned one keeps
+    # the pseudo-parameter. Either way it is *this* account and nothing else.
+    source_account = events_stmt["Condition"]["StringEquals"]["aws:SourceAccount"]
+    assert source_account in (load("dev").account, {"Ref": "AWS::AccountId"})
     # And every rule really does target the topic — the condition list is not stale.
     for rule in _resources(dev.ops, "AWS::Events::Rule").values():
         [target] = rule["Properties"]["Targets"]

@@ -737,8 +737,8 @@ def test_prod_account_context_override_lets_ci_synth(
     for stack in ("storage", "compute", "api", "ops"):
         environment = assembly.get_stack_by_name(f"wiki-prod-{stack}").environment
         assert (environment.account, environment.region) == (PROD_ACCOUNT, "us-west-2")
-    # The override is prod-only: dev never picks it up.
-    assert load("dev", prod_account=PROD_ACCOUNT).account is None
+    # The override is prod-only: dev keeps its own pinned account.
+    assert load("dev", prod_account=PROD_ACCOUNT).account == load("dev").account
 
 
 def test_mismatched_cli_account_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -762,16 +762,27 @@ def test_matching_cli_account_synths(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert app.synth().get_stack_by_name("wiki-prod-storage").environment.account == PROD_ACCOUNT
 
 
-def test_dev_account_may_float(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """dev with account=None synths whatever the CLI resolves to, or nothing at all."""
-    assert load("dev").account is None
-    guard_account(load("dev"), None)
-    guard_account(load("dev"), "123456789012")
-    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", "123456789012")
+def test_dev_is_pinned_and_synths_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dev is pinned to its account (first-deploy checklist step 1). With no
+    credentials the guard has nothing to compare and synth targets the pinned env;
+    with matching credentials likewise. A mismatch is covered by its own test."""
+    monkeypatch.delenv("CDK_DEFAULT_ACCOUNT", raising=False)
+    pinned = load("dev").account
+    assert pinned is not None and len(pinned) == 12 and pinned.isdigit()
     app = _app("dev", tmp_path)
-    assert build(app).account is None
+    assert build(app).account == pinned
     environment = app.synth().get_stack_by_name("wiki-dev-storage").environment
-    assert environment.account == "unknown-account", "env-agnostic: resolved at deploy time"
+    assert (environment.account, environment.region) == (pinned, "us-west-2")
+
+
+def test_unpinned_env_may_float(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An env with account=None is allowed to float — the guard is silent whatever the
+    credentials resolve to. (Neither shipped env floats; this pins the rule itself.)"""
+    floating = replace(load("dev"), account=None)
+    guard_account(floating, None)
+    guard_account(floating, "123456789012")
 
 
 def test_pinned_account_must_be_twelve_digits() -> None:
