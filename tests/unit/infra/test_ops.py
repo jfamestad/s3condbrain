@@ -431,3 +431,53 @@ def test_bad_log_retention_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="log_retention_days=91"):
         _retention(91)
+
+
+# ------------------------------------------------------- alerts topic policy
+
+
+def _publish_grants_to_services(policy: dict[str, Any]) -> list[dict[str, Any]]:
+    out = []
+    for st in policy["Statement"]:
+        actions = [st["Action"]] if isinstance(st["Action"], str) else st["Action"]
+        principal = st.get("Principal", {})
+        if st["Effect"] == "Allow" and "sns:Publish" in actions and "Service" in principal:
+            out.append(st)
+    return out
+
+
+def test_service_publishers_are_conditioned_on_source(dev: Synth, prod: Synth) -> None:
+    """No service principal may publish to the alerts topic unconditionally: every
+    grant names its source rule (``aws:SourceArn``) or at least this account."""
+    for synth in (dev, prod):
+        policy = _only(synth.ops, "AWS::SNS::TopicPolicy")["Properties"]["PolicyDocument"]
+        grants = _publish_grants_to_services(policy)
+        assert grants, "expected at least the EventBridge grant"
+        for st in grants:
+            condition = st.get("Condition") or {}
+            keys = {k for block in condition.values() for k in block}
+            assert keys & {"aws:SourceArn", "aws:SourceAccount"}, st
+
+
+def test_eventbridge_may_publish_only_for_this_stacks_rules(dev: Synth) -> None:
+    policy = _only(dev.ops, "AWS::SNS::TopicPolicy")["Properties"]["PolicyDocument"]
+    [events_stmt] = [
+        st
+        for st in _publish_grants_to_services(policy)
+        if st["Principal"] == {"Service": "events.amazonaws.com"}
+    ]
+    assert events_stmt["Resource"] == {"Ref": _logical_id(dev.ops_stack, "Alerts")}
+    allowed = events_stmt["Condition"]["ArnEquals"]["aws:SourceArn"]
+    allowed = [allowed] if isinstance(allowed, dict) else allowed
+    rule_arns = [{"Fn::GetAtt": [lid, "Arn"]} for lid in _resources(dev.ops, "AWS::Events::Rule")]
+    assert len(rule_arns) == 2, "bucket guard and break-glass watch"
+    assert sorted(json.dumps(a, sort_keys=True) for a in allowed) == sorted(
+        json.dumps(a, sort_keys=True) for a in rule_arns
+    )
+    assert events_stmt["Condition"]["StringEquals"]["aws:SourceAccount"] == {
+        "Ref": "AWS::AccountId"
+    }
+    # And every rule really does target the topic — the condition list is not stale.
+    for rule in _resources(dev.ops, "AWS::Events::Rule").values():
+        [target] = rule["Properties"]["Targets"]
+        assert target["Arn"] == {"Ref": _logical_id(dev.ops_stack, "Alerts")}

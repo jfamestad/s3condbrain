@@ -32,7 +32,7 @@ from app.storage.listings import (
     listing_key,
     parent_of,
 )
-from app.storage.markdown import serialize
+from app.storage.markdown import MAX_FRONTMATTER_BYTES, parse, serialize
 
 BUCKET = "wiki-test"
 
@@ -274,14 +274,33 @@ class TestRebuild:
     def test_frontmatter_longer_than_the_range_falls_back_to_a_full_read(
         self, bucket: Any, index: ListingIndex, put_md: Callable[..., str]
     ) -> None:
-        put_md(
-            "/big/y.md",
-            {"type": "doc", "title": "Long", "notes": "n" * (FRONTMATTER_RANGE_BYTES * 2)},
-        )
+        # The largest block ``parse`` accepts: with its fences the header overruns the
+        # ranged read, so the projection has to fetch the whole object.
+        probe = serialize({"type": "doc", "title": "Long", "notes": "n"}, "")
+        notes = "n" * (MAX_FRONTMATTER_BYTES - (len(probe) - len(b"---\n---\n")) + 1)
+        frontmatter = {"type": "doc", "title": "Long", "notes": notes}
+        stored = serialize(frontmatter, "body")
+        assert len(stored) - len(b"body") > FRONTMATTER_RANGE_BYTES
+        assert parse(stored).frontmatter == frontmatter
+        put_md("/big/y.md", frontmatter)
         listing = index.rebuild(bucket, "/big")
         child = listing.child("y.md")
         assert child is not None
         assert child.title == "Long"
+
+    def test_frontmatter_over_the_parse_cap_projects_as_none(
+        self, bucket: Any, index: ListingIndex, put_md: Callable[..., str]
+    ) -> None:
+        # Storage treats a block over ``MAX_FRONTMATTER_BYTES`` as malformed (empty
+        # frontmatter, whole text as body); the listing reflects that, not an error.
+        put_md(
+            "/big/z.md",
+            {"type": "doc", "title": "Long", "notes": "n" * (FRONTMATTER_RANGE_BYTES * 2)},
+        )
+        listing = index.rebuild(bucket, "/big")
+        child = listing.child("z.md")
+        assert child is not None
+        assert child.title is None and child.type == "doc" and child.seq == 0
 
     def test_empty_object_is_projected_without_error(
         self, bucket: Any, index: ListingIndex

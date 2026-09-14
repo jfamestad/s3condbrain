@@ -15,7 +15,7 @@ from app.mcp.tools.create_article import TOOL as CREATE
 from app.mcp.tools.read_article import TOOL as READ
 from app.mcp.tools.update_article import CURRENT_BODY_CAP, TOOL
 from app.storage.articles import META_ACTOR, META_KIND, AccessDenied, ArticleStore
-from app.storage.markdown import parse
+from app.storage.markdown import parse, serialize
 from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
 
 PATH = "/racing/setup/rear-bar.md"
@@ -308,3 +308,68 @@ def test_s3_access_denied_on_put_is_403(
     expect_error(
         TOOL, ctx, 403, "forbidden", path=PATH, content="x", if_version=existing["version"]
     )
+
+
+# --- audit (AS-10) and the object-size cap (review findings #4, #6b) ---------------------
+
+
+def test_grants_used_are_audited(ctx: ToolContext, existing: dict[str, Any]) -> None:
+    call(TOOL, ctx, path=PATH, content="x", if_version=existing["version"])
+    assert ("/", "own") in ctx.audit.grants_used
+
+
+def test_read_grant_denial_is_audited(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    make_ctx: Callable[..., ToolContext],
+    seed_grant: Callable[..., None],
+) -> None:
+    """The read grant is what the 403 depended on; AS-10 wants it in the audit line."""
+    seed_grant("user_reader", "/racing", Permission.READ)
+    reader = make_ctx("user_reader")
+    expect_error(
+        TOOL, reader, 403, "forbidden", path=PATH, content="x", if_version=existing["version"]
+    )
+    assert ("/racing", "read") in reader.audit.grants_used
+
+
+def _overhead(seq: int) -> int:
+    return len(serialize({**FM, "seq": seq}, ""))
+
+
+def test_object_at_limit_is_accepted(ctx: ToolContext, existing: dict[str, Any]) -> None:
+    content = "x" * (MAX_ARTICLE_BYTES - _overhead(2))
+    result = call(TOOL, ctx, path=PATH, content=content, if_version=existing["version"])
+    assert result["seq"] == 2
+
+
+def test_object_over_limit_is_400_and_writes_nothing(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    get_raw: Callable[..., Any],
+    head_raw: Callable[..., Any],
+) -> None:
+    before = head_raw(PATH)
+    content = "x" * (MAX_ARTICLE_BYTES - _overhead(2) + 1)
+    assert len(content.encode()) <= MAX_ARTICLE_BYTES
+    expect_error(
+        TOOL, ctx, 400, "bad_request", path=PATH, content=content, if_version=existing["version"]
+    )
+    assert head_raw(PATH)["VersionId"] == before["VersionId"]
+    assert parse(get_raw(PATH)).body == "v1 body\n"
+
+
+def test_replacement_frontmatter_over_limits_is_400(
+    ctx: ToolContext, existing: dict[str, Any], get_raw: Callable[..., Any]
+) -> None:
+    expect_error(
+        TOOL,
+        ctx,
+        400,
+        "bad_request",
+        path=PATH,
+        content="x",
+        if_version=existing["version"],
+        frontmatter={"type": "doc", "tags": ["x"] * 21},
+    )
+    assert parse(get_raw(PATH)).frontmatter == {**FM, "seq": 1}

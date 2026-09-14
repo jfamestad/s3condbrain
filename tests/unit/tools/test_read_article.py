@@ -283,3 +283,32 @@ def test_s3_access_denied_is_404(denied_ctx: ToolContext) -> None:
 def test_bad_path_is_400(ctx: ToolContext, minter: FakeMinter, path: Any) -> None:
     expect_error(TOOL, ctx, 400, "bad_request", path=path)
     assert minter.mint_count == 0
+
+
+# --- audit (AS-10) -----------------------------------------------------------------------
+
+
+def test_grants_used_are_audited(ctx: ToolContext, put_raw: Callable[..., str]) -> None:
+    put_raw(PATH, {"type": "doc"}, "body")
+    call(TOOL, ctx, path=PATH)
+    assert ("/", "own") in ctx.audit.grants_used
+
+
+def test_article_grant_is_audited(
+    make_ctx: Callable[..., ToolContext],
+    seed_grant: Callable[..., None],
+    put_raw: Callable[..., str],
+) -> None:
+    put_raw(PATH, {"type": "doc"}, "just this one")
+    seed_grant("user_one", PATH, Permission.READ)
+    reader = make_ctx("user_one")
+    call(TOOL, reader, path=PATH)
+    assert reader.audit.grants_used == [(PATH, "read")]
+
+
+def test_denied_read_with_no_contributing_grant_audits_nothing(
+    nobody: ToolContext, put_raw: Callable[..., str]
+) -> None:
+    put_raw(PATH, {"type": "doc"}, "secret")
+    expect_error(TOOL, nobody, 404, "not_found", path=PATH)
+    assert nobody.audit.grants_used == []

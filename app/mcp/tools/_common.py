@@ -11,10 +11,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import yaml
+
+from app.auth.types import Permission, Resolution
 from app.config import MAX_ARTICLE_BYTES, RESERVED_NAMES, RESERVED_TYPES
 from app.errors import bad_request
 from app.mcp.protocol import ToolContext
 from app.storage.articles import META_ACTOR, META_KIND, ArticleStore
+from app.storage.markdown import MAX_FRONTMATTER_BYTES, MAX_FRONTMATTER_DEPTH, serialize
 
 # Object-metadata ``kind`` values (§8.2).
 KIND_WRITE = "write"
@@ -44,6 +48,31 @@ SECTION_MAX_LENGTH = 200
 
 _ARTICLE_PATH_RE = re.compile(ARTICLE_PATH_PATTERN)
 _FOLDER_PATH_RE = re.compile(FOLDER_PATH_PATTERN)
+
+# ---------------------------------------------------------------------------
+# §10.2 frontmatter limits, enforced server-side (the schema only advertises them)
+# ---------------------------------------------------------------------------
+
+ACTOR_PATTERN = r"^(human:[A-Za-z0-9._@-]+|process:[A-Za-z0-9._-]+|[^/]+/[^/]+)$"
+ACTOR_MAX_LENGTH = 256
+TITLE_MAX_LENGTH = 200
+DESCRIPTION_MAX_LENGTH = 500
+TAGS_MAX_ITEMS = 20
+TAG_MAX_LENGTH = 60
+STATUS_VALUES = frozenset({"draft", "stable", "deprecated"})
+SOURCES_MAX_ITEMS = 50
+SOURCE_FIELD_MAX_LENGTH = {"resource": 2048, "id": 64, "title": 200, "author": 200}
+VERIFIED_MAX_ITEMS = 50
+# Top-level keys, unknown ones included (``additionalProperties: true`` is not "unbounded").
+MAX_FRONTMATTER_KEYS = 50
+# ``MAX_FRONTMATTER_BYTES`` and ``MAX_FRONTMATTER_DEPTH`` come from ``app.storage.markdown``:
+# the write side must never accept a block the read side will treat as malformed.
+# The block is measured with a ``seq`` line at least as long as any the server will
+# write, so the stored object is never larger than what was checked.
+_SEQ_UPPER_BOUND = 2**63 - 1
+_FENCE_BYTES = len(b"---\n---\n")
+
+_ACTOR_RE = re.compile(ACTOR_PATTERN)
 
 
 def article_path(value: Any, field: str = "path") -> str:
@@ -132,20 +161,111 @@ def version_arg(args: dict[str, Any], field: str = "if_version") -> str:
     return value.strip('"')
 
 
+def _string_field(value: Any, field: str, max_length: int, *, required: bool = False) -> None:
+    """``field`` is a string of at most ``max_length`` characters (absent is fine
+    unless ``required``)."""
+    if value is None:
+        if required:
+            raise bad_request(f"'{field}' is required and must be a string.")
+        return
+    if not isinstance(value, str) or len(value) > max_length:
+        raise bad_request(f"'{field}' must be a string of at most {max_length} characters.")
+
+
+def _actor_field(value: Any, field: str) -> None:
+    if not isinstance(value, str) or len(value) > ACTOR_MAX_LENGTH or not _ACTOR_RE.match(value):
+        raise bad_request(
+            f"'{field}' must be an actor: 'human:<id>', 'process:<id>' or '<producer>/<version>'."
+        )
+
+
+def _attestation(value: Any, field: str) -> None:
+    """``{"by": <actor>, "at"?: <string>}`` — the ``generated`` / ``verified`` shape."""
+    if not isinstance(value, dict):
+        raise bad_request(f"'{field}' must be an object with a 'by' actor.")
+    _actor_field(value.get("by"), f"{field}.by")
+    _string_field(value.get("at"), f"{field}.at", ACTOR_MAX_LENGTH)
+
+
+def _list_field(value: Any, field: str, max_items: int) -> list[Any]:
+    if not isinstance(value, list) or len(value) > max_items:
+        raise bad_request(f"'{field}' must be an array of at most {max_items} items.")
+    return value
+
+
+def _depth(value: Any) -> int:
+    """Nesting depth of mappings/sequences, a bare scalar being 0."""
+    if isinstance(value, dict):
+        return 1 + max((_depth(v) for v in value.values()), default=0)
+    if isinstance(value, list):
+        return 1 + max((_depth(v) for v in value), default=0)
+    return 0
+
+
+def _block_bytes(frontmatter: dict[str, Any]) -> int:
+    """Bytes of the YAML block ``serialize`` will store, with the server's ``seq``
+    line counted at its longest."""
+    try:
+        return len(serialize({**frontmatter, "seq": _SEQ_UPPER_BOUND}, "")) - _FENCE_BYTES
+    except yaml.YAMLError as error:
+        raise bad_request(f"'frontmatter' cannot be stored as YAML: {error}") from None
+
+
+def _check_documented_fields(value: dict[str, Any]) -> None:
+    """Every §10.2 property at its advertised limit; unknown keys pass untouched."""
+    _string_field(value.get("title"), "frontmatter.title", TITLE_MAX_LENGTH)
+    _string_field(value.get("description"), "frontmatter.description", DESCRIPTION_MAX_LENGTH)
+    if (tags := value.get("tags")) is not None:
+        for tag in _list_field(tags, "frontmatter.tags", TAGS_MAX_ITEMS):
+            if not isinstance(tag, str) or len(tag) > TAG_MAX_LENGTH:
+                raise bad_request(
+                    f"'frontmatter.tags' items must be strings of at most {TAG_MAX_LENGTH} "
+                    "characters."
+                )
+    if (status := value.get("status")) is not None and status not in STATUS_VALUES:
+        raise bad_request(
+            f"'frontmatter.status' must be one of {sorted(STATUS_VALUES)} when present."
+        )
+    _string_field(value.get("stale_after"), "frontmatter.stale_after", ACTOR_MAX_LENGTH)
+    if (sources := value.get("sources")) is not None:
+        for source in _list_field(sources, "frontmatter.sources", SOURCES_MAX_ITEMS):
+            if not isinstance(source, dict):
+                raise bad_request("'frontmatter.sources' items must be objects with a 'resource'.")
+            for name, max_length in SOURCE_FIELD_MAX_LENGTH.items():
+                _string_field(
+                    source.get(name),
+                    f"frontmatter.sources[].{name}",
+                    max_length,
+                    required=name == "resource",
+                )
+    if (generated := value.get("generated")) is not None:
+        _attestation(generated, "frontmatter.generated")
+    if (verified := value.get("verified")) is not None:
+        for entry in _list_field(verified, "frontmatter.verified", VERIFIED_MAX_ITEMS):
+            _attestation(entry, "frontmatter.verified[]")
+
+
 def validate_frontmatter(value: Any, *, drop_seq: bool = False) -> dict[str, Any]:
-    """Check caller-supplied frontmatter against §10.2.
+    """Check caller-supplied frontmatter against §10.2 — shape *and* limits.
 
     ``type`` is required and must not be a server-written value. ``seq`` is
     server-maintained: rejected on create (there is nothing to echo), silently
     dropped on update (an agent that read the article and hands the block back
-    will naturally include it — §10.2, §10.15).
+    will naturally include it — §10.2, §10.15). Every documented property is
+    checked at its advertised limit; unknown keys are kept but bounded in number,
+    nesting depth and serialized size, so nothing is stored that ``parse`` would
+    later refuse to read.
 
     Args:
         value: The caller's ``frontmatter`` argument.
         drop_seq: When true, remove a supplied ``seq`` instead of rejecting it.
 
+    Returns:
+        The validated mapping (a copy when ``seq`` was dropped; the caller's own
+        object otherwise — callers copy before mutating).
+
     Raises:
-        ToolError: 400 on any violation.
+        ToolError: 400 on any violation, naming the field.
     """
     if not isinstance(value, dict):
         raise bad_request("'frontmatter' is required and must be an object with a 'type'.")
@@ -163,7 +283,44 @@ def validate_frontmatter(value: Any, *, drop_seq: bool = False) -> dict[str, Any
                 "Remove it and retry."
             )
         value = {k: v for k, v in value.items() if k != "seq"}
+    if len(value) > MAX_FRONTMATTER_KEYS:
+        raise bad_request(f"'frontmatter' may carry at most {MAX_FRONTMATTER_KEYS} keys.")
+    _check_documented_fields(value)
+    if _depth(value) > MAX_FRONTMATTER_DEPTH:
+        raise bad_request(f"'frontmatter' may nest at most {MAX_FRONTMATTER_DEPTH} levels deep.")
+    if _block_bytes(value) > MAX_FRONTMATTER_BYTES:
+        raise bad_request(
+            f"'frontmatter' exceeds {MAX_FRONTMATTER_BYTES} bytes when serialized. "
+            "Move long material into the article body."
+        )
     return value
+
+
+def serialize_article(frontmatter: dict[str, Any], content: str) -> bytes:
+    """``serialize`` with the §6.3 ceiling applied to the *stored object*.
+
+    ``content_arg`` bounds the body alone; frontmatter adds up to
+    ``MAX_FRONTMATTER_BYTES`` on top, and the published 1 MiB maximum is on the
+    article as stored.
+
+    Raises:
+        ToolError: 400 when the serialized object exceeds ``MAX_ARTICLE_BYTES``.
+    """
+    body = serialize(frontmatter, content)
+    if len(body) > MAX_ARTICLE_BYTES:
+        raise bad_request(
+            f"The article would be {len(body)} bytes with its frontmatter; the limit is "
+            f"{MAX_ARTICLE_BYTES}. Shorten the content or split the article."
+        )
+    return body
+
+
+def require_grant(ctx: ToolContext, path: str, needed: Permission) -> Resolution:
+    """``ctx.require`` — kept as a name the tools already import. The resolve →
+    record → enforce ordering (AS-10: a denial's contributing grants are logged too)
+    lives in ``ToolContext.require`` so every tool gets it, not only these callers.
+    """
+    return ctx.require(path, needed)
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +412,8 @@ VERSION_SCHEMA: dict[str, Any] = {
 
 ACTOR_SCHEMA: dict[str, Any] = {
     "type": "string",
-    "maxLength": 256,
-    "pattern": r"^(human:[A-Za-z0-9._@-]+|process:[A-Za-z0-9._-]+|[^/]+/[^/]+)$",
+    "maxLength": ACTOR_MAX_LENGTH,
+    "pattern": ACTOR_PATTERN,
     "description": (
         "OKF actor convention: 'human:<id>' for a person, 'process:<id>' for an "
         "automated process, '<producer>/<version>' for an agent."
@@ -402,6 +559,9 @@ __all__ = [
     "KIND_UNARCHIVE",
     "KIND_WRITE",
     "MAX_ARTICLE_BYTES",
+    "MAX_FRONTMATTER_BYTES",
+    "MAX_FRONTMATTER_DEPTH",
+    "MAX_FRONTMATTER_KEYS",
     "SECTION_MAX_LENGTH",
     "SOURCE_SCHEMA",
     "TRUST_HUMAN",
@@ -418,6 +578,8 @@ __all__ = [
     "metadata",
     "parent_folder",
     "reject_reserved_name",
+    "require_grant",
+    "serialize_article",
     "store",
     "summary_from",
     "trust_of",

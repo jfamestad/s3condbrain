@@ -245,7 +245,7 @@ class ComputeStack(cdk.Stack):
                 "KMS_KEY_ARN": self.storage.key.key_arn,
                 "ALLOWED_ORIGINS": ",".join(self.cfg.allowed_origins),
                 "CREDENTIAL_CACHE_SECONDS": str(self.cfg.credential_cache_seconds),
-                "MCP_STRICT_HEADERS": "false",
+                "MCP_STRICT_HEADERS": "true" if self.cfg.strict_mcp_headers else "false",
                 "MCP_PROTOCOL_VERSION": MCP_PROTOCOL_VERSION,
                 "RATELIMIT_TABLE": self._ratelimit_table_name(),
             },
@@ -333,6 +333,29 @@ class ComputeStack(cdk.Stack):
             )
         )
 
+    def _web_client_id(self) -> str:
+        """``workos_web_client_id`` from config, else the ``workosWebClientId`` context.
+
+        Empty means every browser login fails at the redirect, so it is never silent:
+        a warning in dev (synth before WorkOS exists is a legitimate step), an error in
+        prod (synth fails).
+        """
+        client_id = self.cfg.workos_web_client_id or str(
+            self.node.try_get_context("workosWebClientId") or ""
+        )
+        if client_id:
+            return client_id
+        message = (
+            "No WorkOS client id for the web application: set `workos_web_client_id` in "
+            f"infra/config.py for env {self.cfg.name!r} or pass -c workosWebClientId=client_... "
+            "(docs/DEPLOY.md §5 step 7). WORKOS_CLIENT_ID would deploy empty."
+        )
+        if self.cfg.name == "prod":
+            cdk.Annotations.of(self).add_error(message)
+        else:
+            cdk.Annotations.of(self).add_warning_v2("wiki:web-client-id", message)
+        return ""
+
     def _create_web_fn(self, role: iam.Role, env: dict[str, str]) -> lambda_.Function:
         root = self.canonical_mcp_url.removesuffix("/mcp")
         return lambda_.Function(
@@ -355,8 +378,7 @@ class ComputeStack(cdk.Stack):
                 "KMS_KEY_ARN": self.storage.key.key_arn,
                 "CREDENTIAL_CACHE_SECONDS": str(self.cfg.credential_cache_seconds),
                 "WEB_BASE_URL": f"{root}/app",
-                "WORKOS_CLIENT_ID": getattr(self.cfg, "workos_web_client_id", "")
-                or str(self.node.try_get_context("workosWebClientId") or ""),
+                "WORKOS_CLIENT_ID": self._web_client_id(),
                 "WEB_SECRET_ARN": self.web_secret.secret_arn,
                 "SESSION_HOURS": "12",
                 "MCP_LOG_GROUP": self.mcp_fn.log_group.log_group_name,

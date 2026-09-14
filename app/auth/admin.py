@@ -229,8 +229,9 @@ class GrantAdmin:
         )
 
     def grants_of(self, subject: str) -> list[Grant]:
-        """Every grant row for ``subject`` (query on ``pk``)."""
-        return self.store.all_grants(subject)
+        """Every grant row for ``subject`` (query on ``pk``), a disabled person's
+        included — grants outlive disablement and are shown for review (§4.10)."""
+        return self.store.grant_rows(subject)
 
     def grants_on(self, node: str) -> list[Grant]:
         """Every grant attached to exactly ``node`` — a GSI1 query on ``N#<node>``.

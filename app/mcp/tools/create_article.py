@@ -29,13 +29,15 @@ from app.mcp.tools._common import (
     metadata,
     parent_folder,
     reject_reserved_name,
+    require_grant,
+    serialize_article,
     store,
     validate_frontmatter,
 )
 from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed
 from app.storage.listings import ListingChild, basename
-from app.storage.markdown import parse, serialize
+from app.storage.markdown import parse
 
 DESCRIPTION = (
     "Create a new article. Fails if anything already occupies the path, including a "
@@ -86,10 +88,12 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     content = content_arg(args)
     frontmatter = dict(validate_frontmatter(args.get("frontmatter")))
 
-    ctx.grants.require(ctx.subject, parent_folder(path), Permission.WRITE)
+    # The parent folder: ``write`` on any ancestor suffices (§10.9), and the cascade
+    # resolves every ancestor from that one path. Recorded for the audit line (AS-10).
+    require_grant(ctx, parent_folder(path), Permission.WRITE)
 
     frontmatter["seq"] = 1
-    body = serialize(frontmatter, content)
+    body = serialize_article(frontmatter, content)
     s3 = ctx.minter.s3(ctx.subject, Shape.WRITE, path)
     st = store(ctx)
     try:

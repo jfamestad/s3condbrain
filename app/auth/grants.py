@@ -106,6 +106,11 @@ def _is_grant_row(item: dict[str, Any]) -> bool:
     return sk != _PROFILE_SK and sk.startswith("/")
 
 
+def _is_disabled_profile(item: dict[str, Any]) -> bool:
+    """The PROFILE row with ``status == "disabled"`` — the person resolves to nothing."""
+    return item.get("sk") == _PROFILE_SK and item.get("status") == "disabled"
+
+
 class GrantStore:
     """Reads grants from DynamoDB. Construct with an injected resource for tests."""
 
@@ -140,7 +145,7 @@ class GrantStore:
         items: list[dict[str, Any]] = []
         for start in range(0, len(keys), _BATCH_GET_LIMIT):
             items.extend(self._batch_get(keys[start : start + _BATCH_GET_LIMIT]))
-        if any(i.get("sk") == _PROFILE_SK and i.get("status") == "disabled" for i in items):
+        if any(_is_disabled_profile(i) for i in items):
             return []
         return [_grant_from_item(i) for i in items if _is_grant_row(i)]
 
@@ -174,7 +179,35 @@ class GrantStore:
 
     def all_grants(self, subject: str) -> list[Grant]:
         """Every grant row for a subject (Query on pk). Used by search to build the
-        searchable area (§8.7). Excludes the PROFILE item."""
+        searchable area (§8.7). Excludes the PROFILE item.
+
+        The PROFILE row shares the partition, so the same Query returns it: a
+        disabled person gets ``[]`` here exactly as from ``grants_for`` (§12.9),
+        with no extra round trip. Every page is read before deciding — the row
+        sorts after the path keys and may land on the last one.
+        """
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": Key("pk").eq(f"{_SUBJECT_PREFIX}{subject}")
+        }
+        out: list[Grant] = []
+        disabled = False
+        while True:
+            response = self.table.query(**kwargs)
+            for item in response.get("Items", []):
+                if _is_disabled_profile(item):
+                    disabled = True
+                elif _is_grant_row(item):
+                    out.append(_grant_from_item(item))
+            last = response.get("LastEvaluatedKey")
+            if not last:
+                return [] if disabled else out
+            kwargs["ExclusiveStartKey"] = last
+
+    def grant_rows(self, subject: str) -> list[Grant]:
+        """Every grant row stored for a subject, whatever their status — the
+        inventory the admin console reviews. Grants outlive disablement (§4.10)
+        and must stay visible there; nothing that *authorizes* may call this —
+        use ``all_grants`` or ``grants_for``."""
         kwargs: dict[str, Any] = {
             "KeyConditionExpression": Key("pk").eq(f"{_SUBJECT_PREFIX}{subject}")
         }

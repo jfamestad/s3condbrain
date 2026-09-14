@@ -32,6 +32,7 @@ from app.mcp.tools._common import (
     TYPE_POINTER,
     VERSION_SCHEMA,
     article_path,
+    require_grant,
     store,
     trust_of,
 )
@@ -174,7 +175,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     byte_range = _byte_range_arg(args)
 
     try:
-        ctx.grants.require(ctx.subject, path, Permission.READ)
+        require_grant(ctx, path, Permission.READ)
     except ToolError as error:
         if error.status == 403:
             raise not_found() from None

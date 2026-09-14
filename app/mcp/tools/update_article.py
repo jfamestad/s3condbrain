@@ -31,6 +31,8 @@ from app.mcp.tools._common import (
     article_path,
     content_arg,
     metadata,
+    require_grant,
+    serialize_article,
     store,
     validate_frontmatter,
     version_arg,
@@ -38,7 +40,7 @@ from app.mcp.tools._common import (
 from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed, StoredObject
 from app.storage.listings import ListingChild, basename
-from app.storage.markdown import parse, serialize
+from app.storage.markdown import parse
 
 DESCRIPTION = (
     "Replace the body, and optionally the frontmatter, of an existing article. Requires "
@@ -99,7 +101,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if replacement is not None:
         replacement = dict(validate_frontmatter(replacement, drop_seq=True))
 
-    ctx.grants.require(ctx.subject, path, Permission.WRITE)
+    require_grant(ctx, path, Permission.WRITE)
 
     s3 = ctx.minter.s3(ctx.subject, Shape.WRITE, path)
     st = store(ctx)
@@ -110,7 +112,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     stored = parse(current.body)
     frontmatter = replacement if replacement is not None else dict(stored.frontmatter)
     frontmatter["seq"] = stored.seq + 1
-    body = serialize(frontmatter, content)
+    body = serialize_article(frontmatter, content)
     try:
         written = st.put_if_match(s3, path, body, current.etag, metadata(ctx, KIND_WRITE))
     except PreconditionFailed:

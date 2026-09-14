@@ -345,3 +345,21 @@ def test_bad_arguments_are_400_and_mint_nothing(
 
 def test_s3_access_denied_is_empty(denied_ctx: ToolContext) -> None:
     assert call(TOOL, denied_ctx, query="rear") == {"hits": [], "truncated": False}
+
+
+def test_disabled_subject_finds_nothing_and_mints_nothing(
+    as_user: Callable[..., ToolContext],
+    minter: FakeMinter,
+    tree: dict[str, str],
+    grant_table: Any,
+) -> None:
+    """A disabled person keeps their grant rows but resolves to nothing (§12.9) —
+    search included, or their whole searchable area would survive disablement."""
+    user = as_user("user_off", ("/racing", Permission.READ), ("/kitchen/bread.md", Permission.READ))
+    grant_table.put_item(
+        Item={"pk": "U#user_off", "sk": "PROFILE", "email": "off@x", "status": "disabled"}
+    )
+    result = call(TOOL, user, query="rear")
+    assert result["hits"] == []
+    assert minter.mint_count == 0
+    assert user.audit.grants_used == []

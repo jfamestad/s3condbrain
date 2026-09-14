@@ -6,14 +6,18 @@ against the AuthKit JWKS with the algorithm pinned — the same four lines as th
 authorizer (§11.1). The access token is discarded: the web app never calls another
 service on the user's behalf; it acts under its own role with the user's grants.
 
-``state`` and the PKCE verifier travel in a short-lived signed cookie set when the
-login starts; the callback requires both and clears it. Exact-match redirect URI.
+``state``, the OIDC ``nonce`` and the PKCE verifier travel in a short-lived signed
+cookie set when the login starts; the callback requires all three and clears it. The
+ID token must echo the nonce, so a token minted for some other login attempt — or
+captured and replayed — is refused even if the code exchange succeeds. Exact-match
+redirect URI.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import secrets
 import time
 import urllib.parse
@@ -34,6 +38,12 @@ class Identity:
     subject: str
     email: str
     display_name: str
+
+
+def _same(expected: str, given: str) -> bool:
+    """Constant-time equality over bytes, so a non-ASCII value from the wire is a
+    plain mismatch rather than a ``TypeError``."""
+    return hmac.compare_digest(expected.encode(), given.encode())
 
 
 def _pkce() -> tuple[str, str]:
@@ -79,22 +89,25 @@ class AuthKitClient:
 
     def start(self) -> tuple[str, dict[str, object]]:
         """Return ``(authorize_url, cookie_payload)``. The payload is signed by the
-        caller into the OAuth cookie; it holds state, verifier, expiry and where to
-        return after login."""
+        caller into the OAuth cookie; it holds state, nonce, verifier, expiry and
+        where to return after login."""
         verifier, challenge = _pkce()
         state = secrets.token_urlsafe(24)
+        nonce = secrets.token_urlsafe(24)
         params = {
             "response_type": "code",
             "client_id": self.settings.workos_client_id,
             "redirect_uri": self.redirect_uri,
             "scope": "openid profile email",
             "state": state,
+            "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
         url = self.authorize_endpoint + "?" + urllib.parse.urlencode(params)
         payload = {
             "state": state,
+            "nonce": nonce,
             "verifier": verifier,
             "exp": int(time.time()) + STATE_TTL_SECONDS,
         }
@@ -108,10 +121,11 @@ class AuthKitClient:
                 to a 400 page; the message is safe to show).
         """
         expected = cookie_payload.get("state")
-        if not isinstance(expected, str) or not secrets.compare_digest(expected, returned_state):
+        if not isinstance(expected, str) or not _same(expected, returned_state):
             raise ValueError("login state mismatch")
         verifier = cookie_payload.get("verifier")
-        if not isinstance(verifier, str) or not verifier:
+        nonce = cookie_payload.get("nonce")
+        if not isinstance(verifier, str) or not verifier or not isinstance(nonce, str) or not nonce:
             raise ValueError("login session incomplete")
         data = {
             "grant_type": "authorization_code",
@@ -132,6 +146,11 @@ class AuthKitClient:
             claims = self._verify(id_token)
         except jwt.PyJWTError as e:
             raise ValueError(f"id_token rejected: {type(e).__name__}") from None
+        # The nonce binds this ID token to this login attempt (OIDC Core 3.1.3.7 step
+        # 11). Absent or different means the token was not minted for this cookie.
+        claimed = claims.get("nonce")
+        if not isinstance(claimed, str) or not _same(claimed, nonce):
+            raise ValueError("id_token nonce mismatch")
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub:
             raise ValueError("id_token without subject")

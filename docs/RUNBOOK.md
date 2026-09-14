@@ -190,7 +190,10 @@ rotate:
 1. WorkOS dashboard → the web application's client → generate a new secret. Both
    the old and the new are valid until you delete the old.
 2. `aws secretsmanager put-secret-value --secret-id <WEB_SECRET_ARN>
-   --secret-string '<json in the shape the web wave documents>'`.
+   --secret-string '{"client_secret":"<new>","api_key":"<current>","session_key":"<current>"}'`.
+   `put-secret-value` replaces the whole string, so read the current value first
+   (`get-secret-value`) and carry the other two fields over unchanged — a changed
+   `session_key` logs everyone out (4d).
 3. Wait one function lifetime for warm containers to recycle (or redeploy the
    compute stack), then confirm a fresh browser login works.
 4. Delete the old secret in the WorkOS dashboard. A login that fails at this point
@@ -201,6 +204,18 @@ rotate:
 There are no long-lived AWS access keys (§8.8), so there is nothing else to
 rotate. If one ever exists, `make security` reports it as a warning; treat that as
 a finding.
+
+### 4d. Rotation cadence
+
+Nothing alarms on an overdue rotation; put the dates in a calendar that is read.
+
+| What | When | How |
+| --- | --- | --- |
+| WorkOS client secret (`client_secret` in the web secret) | Every **90 days**, and on any suspicion of exposure | 4b: create the new secret in the WorkOS dashboard → `put-secret-value` with the new value, other fields carried over → verify a fresh browser login → revoke the old secret in the dashboard. |
+| WorkOS management API key (`api_key` in the same secret) | Every **90 days**, same day as the client secret | API Keys in the dashboard → create a new key → `put-secret-value`, other fields carried over → verify that "Add a person" in the admin console sends an invitation → revoke the old key. |
+| Session key (`session_key` in the same secret) | Only when needed — a suspected cookie theft, an operator leaving | Edit the secret with a new random value of the same shape (48 alphanumerics). **This logs everyone out**: every session cookie was signed with the old key and stops validating as soon as a container reads the new one. Tell people before, not after. |
+| KMS key `wiki-<env>` | Automatic, yearly | Nothing to do (4a). Never replace the key. |
+| Long-lived AWS access keys | — | None exist (4c). |
 
 ## 5. Revoke a person
 

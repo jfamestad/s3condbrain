@@ -17,6 +17,7 @@ from app.mcp.tools.create_article import TOOL as CREATE
 from app.mcp.tools.list_versions import ACTOR_UNKNOWN, PREFIX_BYTES, TOOL
 from app.mcp.tools.update_article import TOOL as UPDATE
 from app.storage.articles import META_ACTOR, META_KIND, META_MOVED_FROM, key_for
+from app.storage.markdown import MAX_FRONTMATTER_BYTES, parse, serialize
 from tests.unit.tools.conftest import OWNER, DenyingS3, FakeMinter, call, expect_error
 
 PATH = "/racing/setup/rear-bar.md"
@@ -157,14 +158,33 @@ def test_archive_tombstone_is_part_of_the_chain(
 def test_frontmatter_larger_than_the_prefix_still_yields_seq(
     ctx: ToolContext, put_raw: Callable[..., str]
 ) -> None:
+    # The largest block ``parse`` accepts: with its fences the header overruns the
+    # peek, so the tool has to read the whole version to find ``seq``.
+    probe = serialize({"type": "doc", "notes": "n", "seq": 7}, "")
+    notes = "n" * (MAX_FRONTMATTER_BYTES - (len(probe) - len(b"---\n---\n")) + 1)
+    frontmatter = {"type": "doc", "notes": notes, "seq": 7}
+    stored = serialize(frontmatter, "body")
+    assert len(stored) - len(b"body") > PREFIX_BYTES
+    assert parse(stored).frontmatter == frontmatter
+    put_raw(PATH, frontmatter, "body", **{META_ACTOR: "human:a", META_KIND: "write"})
+    [version] = call(TOOL, ctx, path=PATH)["versions"]
+    assert version["seq"] == 7
+    assert version["actor"] == "human:a"
+
+
+def test_frontmatter_over_the_parse_cap_yields_seq_zero(
+    ctx: ToolContext, put_raw: Callable[..., str]
+) -> None:
+    # Storage treats a block over ``MAX_FRONTMATTER_BYTES`` as malformed; the version
+    # is still listed, with the metadata it does have.
     put_raw(
         PATH,
-        {"type": "doc", "notes": "n" * (PREFIX_BYTES + 100), "seq": 7},
+        {"type": "doc", "notes": "n" * (PREFIX_BYTES * 2), "seq": 7},
         "body",
         **{META_ACTOR: "human:a", META_KIND: "write"},
     )
     [version] = call(TOOL, ctx, path=PATH)["versions"]
-    assert version["seq"] == 7
+    assert version["seq"] == 0
     assert version["actor"] == "human:a"
 
 

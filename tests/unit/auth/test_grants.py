@@ -323,3 +323,43 @@ class TestDisabledProfile:
             Item={"pk": "U#user_a", "sk": "PROFILE", "email": "a@x", "status": "active"}
         )
         assert store.resolve("user_a", "/x.md").permission is Permission.OWN
+
+    def test_all_grants_is_empty_for_disabled_profile(
+        self, grant_table: Any, settings: Any
+    ) -> None:
+        """Search builds its area from ``all_grants``; a disabled person must get
+        nothing there too — detected from the same Query, no extra round trip."""
+        store = GrantStore(settings.grant_table)
+        store.put_grant(Grant("user_d", "/racing", Permission.READ))
+        store.put_grant(Grant("user_d", "/kitchen/bread.md", Permission.WRITE))
+        grant_table.put_item(
+            Item={"pk": "U#user_d", "sk": "PROFILE", "email": "d@x", "status": "disabled"}
+        )
+        assert store.all_grants("user_d") == []
+
+    def test_all_grants_keeps_grants_for_active_and_missing_profiles(
+        self, grant_table: Any, settings: Any
+    ) -> None:
+        store = GrantStore(settings.grant_table)
+        g = Grant("user_a", "/racing", Permission.READ)
+        store.put_grant(g)
+        assert store.all_grants("user_a") == [g]  # no profile row
+        grant_table.put_item(
+            Item={"pk": "U#user_a", "sk": "PROFILE", "email": "a@x", "status": "active"}
+        )
+        assert store.all_grants("user_a") == [g]
+
+    def test_grant_rows_is_the_inventory_and_ignores_status(
+        self, grant_table: Any, settings: Any
+    ) -> None:
+        """The admin console reviews a disabled person's grants; only the
+        authorizing readers (``all_grants``, ``grants_for``) hide them."""
+        store = GrantStore(settings.grant_table)
+        g = Grant("user_d", "/racing", Permission.READ)
+        store.put_grant(g)
+        grant_table.put_item(
+            Item={"pk": "U#user_d", "sk": "PROFILE", "email": "d@x", "status": "disabled"}
+        )
+        assert store.grant_rows("user_d") == [g]
+        assert store.all_grants("user_d") == []
+        assert store.grants_for("user_d", "/racing/x.md") == []

@@ -633,7 +633,7 @@ Full-text over article bodies is a later decision and **the tool contract does n
 - **One customer-managed KMS key** for the bucket and the table. Session policies MUST include `kms:Decrypt` for reads and `kms:GenerateDataKey` for writes; scope both to the one key.
 - **Authorizer role:** CloudWatch Logs. No S3, no DynamoDB, no STS, no KMS.
 - **MCP (data plane) role:** `dynamodb:GetItem`, `BatchGetItem`, `Query` on the one grant table and its index — **read-only**; `sts:AssumeRole` on the one storage role; **no direct S3 permissions of its own** — every object touch goes through a minted credential.
-- **Web application role (increment F):** the same, plus `dynamodb:PutItem`, `UpdateItem`, `DeleteItem` on the grant table. **The only role that can change a grant.**
+- **Web application role (increment F):** the same, plus `dynamodb:Scan` (used by `grants_by_granter` — a bounded scan of a table holding tens of rows) and `dynamodb:PutItem`, `UpdateItem`, `DeleteItem` on the grant table. **The only role that can change a grant.**
 - **Storage role:** the role assumed per operation. Its own policy is the outer bound (the whole `a/` prefix, the three action shapes of §8.5, the one key); the session policy narrows each credential from there. It never holds `s3:DeleteObjectVersion` or `s3:BypassGovernanceRetention`.
 - **Break-glass role:** hard delete and Object Lock bypass. Assumed by a person in the console, never by a function. Logged by CloudTrail.
 - **No long-lived access keys anywhere.**

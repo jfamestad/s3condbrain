@@ -7,7 +7,7 @@ that would deploy fine if wrong and only show up as a disclosure later.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,8 @@ import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Match, Template
 
-from infra.config import load
+from infra.app import build
+from infra.config import EnvConfig, guard_account, load
 from infra.stacks.api import ApiStack
 from infra.stacks.compute import ComputeStack
 from infra.stacks.storage import StorageStack
@@ -40,9 +41,14 @@ def _build_code_root(root: Path) -> Path:
     return root
 
 
-def _synth(env_name: str, code_root: Path, context: dict[str, str] | None = None) -> Synth:
+def _synth(
+    env_name: str,
+    code_root: Path,
+    context: dict[str, str] | None = None,
+    cfg: EnvConfig | None = None,
+) -> Synth:
     app = cdk.App(context={"env": env_name, "certificateArn": CERT_ARN, **(context or {})})
-    cfg = load(env_name)
+    cfg = cfg or load(env_name)
     aws_env = cdk.Environment(account=cfg.account, region=cfg.region)
     storage = StorageStack(app, "storage", cfg=cfg, env=aws_env)
     compute = ComputeStack(
@@ -268,12 +274,62 @@ def test_function_environment(dev: Synth) -> None:
         "MCP_STRICT_HEADERS",
         "MCP_PROTOCOL_VERSION",
     }
-    assert mcp_env["MCP_STRICT_HEADERS"] == "false"
+    assert mcp_env["MCP_STRICT_HEADERS"] == ("true" if load("dev").strict_mcp_headers else "false")
     assert mcp_env["MCP_PROTOCOL_VERSION"] == "2026-07-28"
     assert mcp_env["CREDENTIAL_CACHE_SECONDS"] == "900"
     assert mcp_env["ALLOWED_ORIGINS"] == "https://claude.ai"
     storage_role_id = _logical_id(dev.compute_stack, "StorageRole")
     assert mcp_env["STORAGE_ROLE_ARN"] == {"Fn::GetAtt": [storage_role_id, "Arn"]}
+
+
+def test_strict_mcp_headers_follows_config(tmp_path: Path) -> None:
+    """§6.2: the safety valve is a config field, not a literal in the stack."""
+    assert load("dev").strict_mcp_headers is False
+    assert load("prod").strict_mcp_headers is False, "flip deliberately; see infra/config.py"
+    strict = replace(load("dev"), strict_mcp_headers=True)
+    synth = _synth("dev", _build_code_root(tmp_path), cfg=strict)
+    _, mcp = _function_by_handler(synth.compute, "app.mcp.handler.handle")
+    assert mcp["Properties"]["Environment"]["Variables"]["MCP_STRICT_HEADERS"] == "true"
+
+
+def _annotations(stack: cdk.Stack, type_: str) -> list[str]:
+    return [str(m.data) for c in stack.node.find_all() for m in c.node.metadata if m.type == type_]
+
+
+def test_missing_web_client_id_warns_in_dev_and_errors_in_prod(dev: Synth, prod: Synth) -> None:
+    """An empty WORKOS_CLIENT_ID never deploys silently; prod does not deploy at all."""
+    assert load("dev").workos_web_client_id == "" and load("prod").workos_web_client_id == ""
+    for synth in (dev, prod):
+        _, web = _function_by_handler(synth.compute, "app.web.handler.handle")
+        assert web["Properties"]["Environment"]["Variables"]["WORKOS_CLIENT_ID"] == ""
+
+    dev_warnings = _annotations(dev.compute_stack, "aws:cdk:warning")
+    dev_errors = _annotations(dev.compute_stack, "aws:cdk:error")
+    assert any("workosWebClientId" in w for w in dev_warnings), dev_warnings
+    assert not any("workosWebClientId" in e for e in dev_errors)
+
+    prod_errors = _annotations(prod.compute_stack, "aws:cdk:error")
+    assert any("workosWebClientId" in e for e in prod_errors), prod_errors
+    assert not any(
+        "workosWebClientId" in w for w in _annotations(prod.compute_stack, "aws:cdk:warning")
+    )
+
+
+def test_web_client_id_from_config_or_context_is_silent(tmp_path: Path) -> None:
+    by_context = _synth(
+        "prod", _build_code_root(tmp_path / "ctx"), {"workosWebClientId": "client_ctx"}
+    )
+    by_config = _synth(
+        "prod",
+        _build_code_root(tmp_path / "cfg"),
+        cfg=replace(load("prod"), workos_web_client_id="client_cfg"),
+    )
+    for synth, expected in ((by_context, "client_ctx"), (by_config, "client_cfg")):
+        _, web = _function_by_handler(synth.compute, "app.web.handler.handle")
+        assert web["Properties"]["Environment"]["Variables"]["WORKOS_CLIENT_ID"] == expected
+        for type_ in ("aws:cdk:error", "aws:cdk:warning"):
+            annotations = _annotations(synth.compute_stack, type_)
+            assert not any("workosWebClientId" in a for a in annotations), annotations
 
 
 def test_authorizer_role_has_no_data_permissions(dev: Synth) -> None:
@@ -624,3 +680,94 @@ def test_bucket_policy_denies_other_accounts(dev: Synth) -> None:
     assert deny["Action"] == "s3:*"
     assert "StringNotEquals" in deny["Condition"]
     assert "aws:PrincipalAccount" in deny["Condition"]["StringNotEquals"]
+
+
+# ------------------------------------------------------- account guard (§9.6)
+
+PROD_ACCOUNT = "000000000000"
+
+
+def _app(env_name: str, tmp_path: Path, **context: str) -> cdk.App:
+    return cdk.App(
+        context={
+            "env": env_name,
+            "certificateArn": CERT_ARN,
+            "codeRoot": str(_build_code_root(tmp_path)),
+            "workosWebClientId": "client_test",
+            **context,
+        }
+    )
+
+
+def test_prod_without_pinned_account_refuses_to_synth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact failure an operator sees from `cdk synth -c env=prod` before step 1."""
+    monkeypatch.delenv("CDK_DEFAULT_ACCOUNT", raising=False)
+    assert load("prod").account is None, "config.py pins prod now; retarget this test"
+    with pytest.raises(SystemExit) as exc:
+        build(_app("prod", tmp_path))
+    message = str(exc.value)
+    assert "env 'prod' has account=None in infra/config.py" in message
+    assert "first-deploy checklist step 1" in message
+    assert "-c prodAccount=" in message
+
+
+def test_prod_account_context_override_lets_ci_synth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CDK_DEFAULT_ACCOUNT", raising=False)
+    app = _app("prod", tmp_path, prodAccount=PROD_ACCOUNT)
+    cfg = build(app)
+    assert cfg.account == PROD_ACCOUNT
+    assembly = app.synth()
+    for stack in ("storage", "compute", "api", "ops"):
+        environment = assembly.get_stack_by_name(f"wiki-prod-{stack}").environment
+        assert (environment.account, environment.region) == (PROD_ACCOUNT, "us-west-2")
+    # The override is prod-only: dev never picks it up.
+    assert load("dev", prod_account=PROD_ACCOUNT).account is None
+
+
+def test_mismatched_cli_account_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", "111111111111")
+    with pytest.raises(SystemExit) as exc:
+        build(_app("prod", tmp_path, prodAccount=PROD_ACCOUNT))
+    assert str(exc.value) == (
+        f"credentials resolve to account 111111111111 but infra/config.py pins "
+        f"{PROD_ACCOUNT} for env prod"
+    )
+    # Same rule for any env that pins: a pinned dev is refused the same way.
+    pinned_dev = replace(load("dev"), account="222222222222")
+    with pytest.raises(SystemExit, match="pins 222222222222 for env dev"):
+        guard_account(pinned_dev, "111111111111")
+
+
+def test_matching_cli_account_synths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", PROD_ACCOUNT)
+    app = _app("prod", tmp_path, prodAccount=PROD_ACCOUNT)
+    build(app)
+    assert app.synth().get_stack_by_name("wiki-prod-storage").environment.account == PROD_ACCOUNT
+
+
+def test_dev_account_may_float(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dev with account=None synths whatever the CLI resolves to, or nothing at all."""
+    assert load("dev").account is None
+    guard_account(load("dev"), None)
+    guard_account(load("dev"), "123456789012")
+    monkeypatch.setenv("CDK_DEFAULT_ACCOUNT", "123456789012")
+    app = _app("dev", tmp_path)
+    assert build(app).account is None
+    environment = app.synth().get_stack_by_name("wiki-dev-storage").environment
+    assert environment.account == "unknown-account", "env-agnostic: resolved at deploy time"
+
+
+def test_pinned_account_must_be_twelve_digits() -> None:
+    with pytest.raises(SystemExit, match="exactly 12 digits"):
+        guard_account(replace(load("prod"), account="12345"), None)
+    with pytest.raises(SystemExit, match="exactly 12 digits"):
+        guard_account(replace(load("prod"), account="arn:aws:iam::000000000000:root"), None)
+
+
+def test_unknown_env_is_refused() -> None:
+    with pytest.raises(SystemExit, match="unknown env 'staging'"):
+        load("staging")

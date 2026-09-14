@@ -70,6 +70,8 @@ jobs:
         run: make build
       - name: cdk synth (dev, all stacks)
         run: npx cdk synth -c env=dev -c certificateArn="$SYNTH_CERT_ARN" --quiet
+      - name: cdk synth (prod, all stacks)
+        run: npx cdk synth -c env=prod -c prodAccount=000000000000 -c workosWebClientId=client_ci_placeholder -c certificateArn="$SYNTH_CERT_ARN" --quiet
 
       - name: Open the refresh PR (no-op when the lock did not change)
         uses: peter-evans/create-pull-request@v6

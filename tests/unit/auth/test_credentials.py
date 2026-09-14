@@ -171,7 +171,33 @@ class TestReadShape:
             "kms:Decrypt",
         }
         [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
-        assert versions["Condition"] == {"StringLike": {"s3:prefix": ["a/racing/x.md*"]}}
+        assert versions["Condition"] == {"StringEquals": {"s3:prefix": "a/racing/x.md"}}
+
+    @pytest.mark.parametrize("shape", [Shape.READ, Shape.WRITE])
+    @pytest.mark.parametrize(
+        ("path", "key"),
+        [("/racing/x.md", "a/racing/x.md"), ("/x.md", "a/x.md"), ("/a/b/c/d.md", "a/a/b/c/d.md")],
+    )
+    def test_article_version_listing_is_pinned_to_the_exact_key(
+        self, shape: Shape, path: str, key: str
+    ) -> None:
+        """An article grant must not list sibling names: ``StringLike a/racing/x.md*``
+        also admits ``a/racing/x.md.bak.md`` and ``a/racing/x.md/...``. Every version
+        walk passes ``Prefix=key`` exactly, so the condition is an exact match."""
+        pol = session_policy(shape, BUCKET, KMS, path)
+        [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
+        assert versions["Condition"] == {"StringEquals": {"s3:prefix": key}}
+        assert "StringLike" not in versions["Condition"]
+        assert "*" not in json.dumps(versions["Condition"])
+
+    @pytest.mark.parametrize("shape", [Shape.READ, Shape.WRITE])
+    def test_folder_version_listing_keeps_the_prefix_wildcard(self, shape: Shape) -> None:
+        pol = session_policy(shape, BUCKET, KMS, "/racing")
+        [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
+        assert versions["Condition"] == {"StringLike": {"s3:prefix": ["a/racing/*"]}}
+        pol = session_policy(shape, BUCKET, KMS, "/")
+        [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
+        assert versions["Condition"] == {"StringLike": {"s3:prefix": ["a/*"]}}
 
     def test_only_allow_statements_on_the_bucket_or_key(self) -> None:
         pol = session_policy(Shape.READ, BUCKET, KMS, "/racing/x.md")

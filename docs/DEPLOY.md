@@ -13,6 +13,66 @@ budget) → `wiki-<env>-ops` (trail, alerts, alarms, break-glass role, backups).
 
 ---
 
+## First-deploy checklist
+
+Once per environment, in this order, ticking as you go. Each item links to the
+section that explains it; the sections below stay the reference. `dev` all the way
+through before `prod` starts. Items 1, 2 and 5 exist because §9.6 puts the two
+environments in separate accounts, and a deploy that lands in the wrong one is the
+failure this list is for.
+
+- [ ] **1. Account created and pinned.** The AWS account for this env exists and its
+      12-digit id is written into `infra/config.py` as `account=` for that env
+      ([§1](#1-aws-accounts-and-credentials), [§3](#3-infraconfigpy)). **Never `None`
+      for prod** — synth refuses. `dev` may float: `None` means whatever account the
+      CLI's credentials resolve to.
+- [ ] **2. Credentials point at it.** `aws sts get-caller-identity` shows that account
+      id — before any `make` command, every time ([§1](#1-aws-accounts-and-credentials)).
+      If `account` is pinned and the credentials resolve elsewhere, synth stops with
+      `credentials resolve to account X but infra/config.py pins Y for env Z`.
+- [ ] **3. AuthKit domain and web client id filled in.** `authkit_domain` and
+      `workos_web_client_id` in `infra/config.py` for this env ([§3](#3-infraconfigpy);
+      the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 7). An
+      empty client id is a synth warning in dev and a synth **error** in prod.
+- [ ] **4. Certificate or hosted zone.** Either `hosted_zone_name` is set, or an ACM
+      certificate exists in `us-west-2` for the exact hostname and its ARN is at hand
+      as `CERT_ARN` ([§2](#2-domain-and-certificate)).
+- [ ] **5. `make synth ENV=<env> CERT_ARN=...`** succeeds, and the
+      `wiki: env=<env> account=<id> region=us-west-2` line it prints shows the account
+      from step 1 ([§4](#4-deploy)).
+- [ ] **6. `make deploy ENV=<env> CERT_ARN=...`**, with `-c alertEmail=` for prod;
+      confirm the SNS subscription from the email ([§4](#4-deploy)).
+- [ ] **7. DNS.** CNAME or ALIAS from the hostname to the api stack's `DomainTarget`;
+      the metadata URL answers ([§2](#2-domain-and-certificate), [§4](#4-deploy)).
+- [ ] **8. Secret filled.** `client_secret` and `api_key` replaced in the secret at
+      `WebSecretArn` ([§5](#5-workos-the-authorization-server) step 7).
+- [ ] **9. Gate script passed** — `GATE PASSED`, check 4 included. Keep the `sub` from
+      the token it decodes; step 10 needs it ([§5](#5-workos-the-authorization-server)
+      step 5).
+- [ ] **10. `make grant-owner`** with that subject ([§6](#6-first-owner)).
+- [ ] **11. `make aws-tests`** — the §11.3 step 3 negative tests: a minted credential
+      must be refused by AWS outside its prefix, not by our code. Needs this account's
+      credentials and the storage stack outputs exported as `WIKI_BUCKET`,
+      `STORAGE_ROLE_ARN`, `KMS_KEY_ARN` ([§4](#4-deploy) outputs table). A skip is
+      not a pass.
+- [ ] **12. `make security`** against the deployed instance, no skips
+      ([§8](#8-make-security--the-128-checklist)).
+- [ ] **13. Restore rehearsal done and dated** in `docs/RUNBOOK.md` §7 "Record"
+      ([§8](#8-make-security--the-128-checklist) item 7). The §12.8 checklist is not
+      complete until that row exists.
+
+Post-launch, once per environment:
+
+- [ ] **Flip `strict_mcp_headers` to `True`** in `infra/config.py` and redeploy, once
+      a real Claude client has been observed sending the `Mcp-*` headers. HANDOFF §6.2
+      calls them mandatory; the valve stays off until then because a client that omits
+      them would be locked out with a `400`. Absent headers are tolerated silently
+      while it is off, so there is nothing to look for in a log — observe by doing:
+      flip it in **dev** first, add the connector ([§7](#7-add-the-connector)),
+      exercise a tool call; if that works, the client sends them, and prod can follow.
+
+---
+
 ## 0. Repository settings (once, before the first real push)
 
 These are GitHub settings, not files, and §12.4 wants them on **before** the first
@@ -73,12 +133,26 @@ Per environment in `ENVIRONMENTS`:
 | `object_lock` | `False` | `True` (§8.2 — decided before the first prod deploy; see §8 below) |
 | `retain_data` | `False` | `True` |
 | `allowed_origins` | `("https://claude.ai",)` | same |
+| `workos_web_client_id` | the web app's AuthKit client id (§5 step 7) | same — empty is a synth **error** in prod, a warning in dev; `-c workosWebClientId=` overrides for one command |
+| `strict_mcp_headers` | `False` | `False` until a real client is seen sending the `Mcp-*` headers (checklist, post-launch item) |
 | `log_retention_days` | 90 | 90 (§12.7) |
 | `backup_retention_days` | 35 | 35 |
 
-`account` may stay `None` (the CLI's current account is used) or be pinned to the
-account id so a deploy with the wrong profile fails instead of succeeding somewhere
-surprising. Pin it for prod.
+`account` is the guard against deploying to the wrong account (§9.6). `infra/app.py`
+checks it before any stack is built (`guard_account` in `infra/config.py`):
+
+- **prod must pin it.** `account=None` for prod refuses to synth at all, with a
+  message pointing at checklist step 1. Write the 12-digit id.
+- **A pinned account must match the credentials.** The CDK CLI tells the app which
+  account its credentials resolve to (`CDK_DEFAULT_ACCOUNT`); when that differs from
+  the pin, synth stops with `credentials resolve to account X but infra/config.py
+  pins Y for env Z`. This applies to any env that pins, dev included.
+- **dev may float.** `account=None` means the CLI's current account is used — which
+  is what checklist step 2 is for.
+- **`-c prodAccount=<id>`** stands in for the prod pin for one command. It exists so
+  CI can synth prod without the real id in the repo (`.github/workflows/ci.yml`
+  passes `000000000000`, plus a placeholder `workosWebClientId`); it is not a way to
+  deploy — a deploy still needs step 1.
 
 ## 4. Deploy
 
@@ -88,6 +162,9 @@ make test
 make deploy ENV=dev CERT_ARN=arn:aws:acm:us-west-2:<account>:certificate/<id>
 ```
 
+`make synth ENV=<env> CERT_ARN=...` is the dry run: the same build and synthesis
+with no deploy, printing `wiki: env=<env> account=<id> region=<region>` on the way
+so the account can be read against `aws sts get-caller-identity` (checklist step 5).
 `make deploy` runs `make build` (packages both functions for arm64 / Python 3.13),
 then `cdk deploy --all`. To attach an email to the alerts topic and the budget in the
 same deploy, add the context on the CDK command directly:
@@ -232,7 +309,9 @@ Everything above, again, in the prod account, plus:
   domain (`authkit_domain` for prod), its own resource indicator registered for
   `https://wiki.famestad.com/mcp`, and the §2 gate run again against it. A dev
   token must not validate against prod and cannot: the audience differs.
-- **Pin `account`** in the prod config.
+- **Pin `account`** in the prod config — synth refuses without it (§3), and refuses
+  when the credentials resolve to a different account.
+- **`workos_web_client_id` set** — empty is a synth error in prod.
 - **Alerts go to a person.** Pass `-c alertEmail=` on the prod deploy and confirm
   the subscription. Check that the first daily backup job (09:00 UTC) completes in
   the AWS Backup console; a KMS permission problem shows up there and nowhere else.

@@ -12,6 +12,14 @@ at or below ``/racing``, grants only there, and sees people only insofar as they
 hold grants there. Someone who owns nothing sees a sentence and no data. The owner
 guard itself is enforced in ``GrantAdmin`` — this module only decides what to show.
 
+That scoping extends to the directory itself: a subtree owner is never shown, and
+never told, who else has an account. The grant form lists only people already in
+their scope, by display name; anyone else is reached by typing an email. "Add a
+person" with an email that already has an account simply grants to it and lands on
+their page, as for a new account, so the answer is the same either way; a lookup
+that cannot be acted on gets one fixed sentence whatever the reason
+(``EMAIL_NOT_GRANTABLE``, ``EMAIL_NOT_ADDABLE``).
+
 Grants read as sentences, not ACL rows: *"Dana can write everything under
 /racing/setup (granted by Josh, 2026-09-13)"*.
 
@@ -63,6 +71,16 @@ REVOCATION_SENTENCE = (
     "someone's conversation history."
 )
 
+# Said whenever an email typed into the console cannot be acted on, whatever the
+# reason, so the answer never says which reason — and so never confirms that an
+# address has an account elsewhere in the tree. Constants because the tests assert
+# the sentence is identical across reasons and across viewers.
+EMAIL_NOT_GRANTABLE = "No account with that email can be granted here."
+EMAIL_NOT_ADDABLE = (
+    "No account with that email can be added here; if they already have an account, "
+    "grant them access from the Grants page by email."
+)
+
 
 # --- scope -----------------------------------------------------------------------------
 
@@ -104,6 +122,38 @@ def _require_root(scope: Scope, what: str) -> None:
 
 def _profiles(ctx: WebContext) -> dict[str, Profile]:
     return {p.subject: p for p in ctx.admin.list_profiles()}
+
+
+def _profile_by_email(ctx: WebContext, email: str) -> Profile | None:
+    """The profile whose email matches, case-insensitively; one GSI query."""
+    wanted = email.lower()
+    for p in ctx.admin.list_profiles():
+        if p.email.lower() == wanted:
+            return p
+    return None
+
+
+def _grant_existing(
+    ctx: WebContext, profile: Profile, node: str, permission: Permission
+) -> Response:
+    """ "Add a person" whose email already has a profile: grant and land on their
+    page, exactly as a new account would (§15.2 step 1). No WorkOS call, no
+    invitation — they can already sign in. From the owner's side the two paths
+    answer alike, so the form never says whether an address was known here; the
+    person is then legitimately in their scope (§11.6). The one refusal is a
+    disabled account, and it is the same sentence for every owner.
+    """
+    if profile.status == "disabled":
+        raise HttpError(400, EMAIL_NOT_ADDABLE)
+    ctx.admin.grant(ctx.subject, profile.subject, node, permission)
+    ctx.log.info(
+        "person_added",
+        request_id=ctx.request_id,
+        subject=profile.subject,
+        by=ctx.subject,
+        existing=True,
+    )
+    return redirect(f"{PREFIX}/admin/people/{profile.subject}?added=1&invite=none")
 
 
 def _names(profiles: dict[str, Profile]) -> dict[str, str]:
@@ -302,13 +352,9 @@ def add_person(request: Request, ctx: WebContext) -> Response:
         ctx.admin.assert_owner(ctx.subject, node)
     except NotAnOwner:
         raise HttpError(403, f"You do not own {node}, so you cannot grant there.") from None
-    for existing in ctx.admin.list_profiles():
-        if existing.email.lower() == email.lower():
-            raise HttpError(
-                400,
-                f"{email} is already a member. Grant access from their page: "
-                f"{PREFIX}/admin/people/{existing.subject}",
-            )
+    existing = _profile_by_email(ctx, email)
+    if existing is not None:
+        return _grant_existing(ctx, existing, node, permission)
     workos = _workos(ctx)
     try:
         subject = workos.find_user_by_email(email)
@@ -328,10 +374,12 @@ def add_person(request: Request, ctx: WebContext) -> Response:
     try:
         ctx.admin.create_profile(subject, email, display_name, "invited")
     except ValueError:
-        # The WorkOS user exists and already has a profile under this subject.
-        raise HttpError(
-            400, f"That person is already a member: {PREFIX}/admin/people/{subject}"
-        ) from None
+        # The WorkOS user already has a profile under this subject (their email
+        # changed upstream). Same answer as an email we knew.
+        held = ctx.admin.get_profile(subject)
+        if held is None:  # a profile that vanished between the two calls
+            raise HttpError(400, EMAIL_NOT_ADDABLE) from None
+        return _grant_existing(ctx, held, node, permission)
     ctx.admin.grant(ctx.subject, subject, node, permission)
     invite = "sent"
     try:
@@ -421,11 +469,13 @@ def grants(request: Request, ctx: WebContext) -> Response:
     profiles = _profiles(ctx)
     names = _names(profiles)
     in_scope = _grants_in_scope(ctx, scope, profiles)
-    # The grant form lists everyone who can still sign in, so a subtree owner can
-    # bring a member into their subtree for the first time. Names only — what those
-    # people hold elsewhere in the tree is not shown.
+    # The grant form lists the people this viewer already administers: everyone who
+    # can sign in for a root owner, otherwise only those holding a grant under an
+    # owned root (§11.6). Display names only, never emails. Someone outside that
+    # list is reached by typing their email into the same form (``grant`` below).
+    pool = profiles.values() if scope.is_root else (profiles[s] for s in in_scope)
     grantees = sorted(
-        (p for p in profiles.values() if p.status != "disabled"),
+        (p for p in pool if p.status != "disabled"),
         key=lambda p: names[p.subject].lower(),
     )
     return page(
@@ -434,19 +484,36 @@ def grants(request: Request, ctx: WebContext) -> Response:
         scope=scope,
         groups=_grant_groups(in_scope, names),
         grantees=grantees,
-        names=names,
         permissions=[p.value for p in Permission],
         revocation=REVOCATION_SENTENCE,
     )
 
 
 def grant(request: Request, ctx: WebContext) -> Response:
+    """Grant to a person picked from the list, or — when none is picked — to the
+    account behind a typed email. The email path is how a subtree owner brings
+    someone new into their subtree; it confirms nothing when it fails."""
     form = request.form()
     subject = (form.get("subject") or "").strip()
-    if not subject or ctx.admin.get_profile(subject) is None:
-        raise HttpError(400, "Pick a person from the list.")
+    email = (form.get("email") or "").strip()
     node = _node_arg(form.get("node", ""))
     permission = _permission_arg(form.get("permission", ""))
+    # Ownership before any lookup: a node the viewer does not own answers 403
+    # whatever the email, so the form cannot probe accounts from outside its scope.
+    try:
+        ctx.admin.assert_owner(ctx.subject, node)
+    except NotAnOwner:
+        raise HttpError(403, f"You do not own {node}, so you cannot grant there.") from None
+    if subject:
+        if ctx.admin.get_profile(subject) is None:
+            raise HttpError(400, "Pick a person from the list.")
+    elif email:
+        found = _profile_by_email(ctx, _email_arg(email))
+        if found is None or found.status == "disabled":
+            raise HttpError(400, EMAIL_NOT_GRANTABLE)
+        subject = found.subject
+    else:
+        raise HttpError(400, "Pick a person from the list, or give their email.")
     try:
         ctx.admin.grant(ctx.subject, subject, node, permission)
     except NotAnOwner:
@@ -628,4 +695,11 @@ def register(router: Router) -> None:
     router.add("GET", "/admin/delete/{path:path}", view(delete_runbook))
 
 
-__all__ = ["REVOCATION_SENTENCE", "Scope", "register", "sentence"]
+__all__ = [
+    "EMAIL_NOT_ADDABLE",
+    "EMAIL_NOT_GRANTABLE",
+    "REVOCATION_SENTENCE",
+    "Scope",
+    "register",
+    "sentence",
+]

@@ -109,7 +109,8 @@ class _Jwks:
         return K()
 
 
-def _id_token(key: Any, settings: Settings, **over: Any) -> str:
+def _id_token(key: Any, settings: Settings, nonce: str | None = None, **over: Any) -> str:
+    """An ID token as AuthKit would mint it. ``nonce=None`` leaves the claim out."""
     now = int(time.time())
     claims = {
         "iss": settings.authkit_domain,
@@ -119,6 +120,7 @@ def _id_token(key: Any, settings: Settings, **over: Any) -> str:
         "name": "Test Person",
         "iat": now,
         "exp": now + 300,
+        **({"nonce": nonce} if nonce is not None else {}),
         **over,
     }
     return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "k1"})
@@ -140,21 +142,49 @@ def _client(
 
 def test_oauth_start_and_finish(settings: Settings, rsa_key: Any) -> None:
     s = Settings.from_env()
-    c = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s)})
+    body: dict[str, Any] = {}  # the token is minted once the nonce is known
+    c = _client(s, rsa_key, body)
     url, payload = c.start()
     assert "code_challenge_method=S256" in url and "resource=" not in url
+    assert f"nonce={payload['nonce']}" in url and f"state={payload['state']}" in url
+    assert payload["nonce"] != payload["state"]
     assert c.redirect_uri == "https://wiki-dev.famestad.com/app/callback"
+    body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]))
     ident = c.finish("code123", str(payload["state"]), payload)
     assert ident.subject == SUBJECT and ident.email == "test@example.com"
 
 
+def test_oauth_rejects_wrong_missing_or_unrecorded_nonce(rsa_key: Any) -> None:
+    s = Settings.from_env()
+    body: dict[str, Any] = {}
+    c = _client(s, rsa_key, body)
+    _, payload = c.start()
+    state = str(payload["state"])
+    body["id_token"] = _id_token(rsa_key, s, nonce="minted-for-some-other-login")
+    with pytest.raises(ValueError, match="nonce"):
+        c.finish("c", state, payload)
+    body["id_token"] = _id_token(rsa_key, s)  # no nonce claim at all
+    with pytest.raises(ValueError, match="nonce"):
+        c.finish("c", state, payload)
+    # A cookie from before nonces existed is refused before the code is exchanged.
+    stale = {k: v for k, v in payload.items() if k != "nonce"}
+    body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]))
+    with pytest.raises(ValueError, match="incomplete"):
+        _client(s, rsa_key, body, status=500).finish("c", state, stale)
+
+
 def test_oauth_rejects_state_mismatch_bad_aud_and_none_alg(rsa_key: Any) -> None:
     s = Settings.from_env()
-    ok = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s)})
+    ok = _client(s, rsa_key, {})
     _, payload = ok.start()
+    nonce = str(payload["nonce"])
     with pytest.raises(ValueError):
         ok.finish("c", "wrong-state", payload)
-    bad_aud = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s, aud="someone-else")})
+    with pytest.raises(ValueError):  # non-ASCII is a mismatch, not a TypeError
+        ok.finish("c", "wrong-\u00e9tat", payload)
+    bad_aud = _client(
+        s, rsa_key, {"id_token": _id_token(rsa_key, s, nonce=nonce, aud="someone-else")}
+    )
     with pytest.raises(ValueError):
         bad_aud.finish("c", str(payload["state"]), payload)
     none_tok = jwt.encode(
@@ -162,6 +192,7 @@ def test_oauth_rejects_state_mismatch_bad_aud_and_none_alg(rsa_key: Any) -> None
             "sub": SUBJECT,
             "iss": s.authkit_domain,
             "aud": s.workos_client_id,
+            "nonce": nonce,
             "exp": int(time.time()) + 60,
         },
         None,
@@ -193,6 +224,7 @@ def test_login_page_and_start_sets_oauth_cookie() -> None:
         start["headers"]["Location"].startswith("https://spirited")
         or "/oauth2/authorize?" in start["headers"]["Location"]
     )
+    assert "nonce=" in start["headers"]["Location"]
     cookie = start["multiValueHeaders"]["Set-Cookie"][0]
     assert cookie.startswith("__Host-wiki_oauth=") and "Max-Age=600" in cookie
 
@@ -206,9 +238,11 @@ def test_next_param_never_open_redirect() -> None:
 
 def test_callback_unknown_subject_is_403(monkeypatch: pytest.MonkeyPatch, rsa_key: Any) -> None:
     s = Settings.from_env()
-    fake = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s, sub="user_stranger")})
+    body: dict[str, Any] = {}
+    fake = _client(s, rsa_key, body)
     monkeypatch.setattr(web_app, "authkit", lambda ctx: fake)
     _, payload = fake.start()
+    body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]), sub="user_stranger")
     cookie = sess.encode(SESSION_KEY, payload)
     out = call(
         event(
@@ -226,9 +260,11 @@ def test_callback_success_sets_session_and_activates_invited(
 ) -> None:
     admin.create_profile(SUBJECT, "test@example.com", "Test Person", "invited")
     s = Settings.from_env()
-    fake = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s)})
+    body: dict[str, Any] = {}
+    fake = _client(s, rsa_key, body)
     monkeypatch.setattr(web_app, "authkit", lambda ctx: fake)
     _, payload = fake.start()
+    body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]))
     payload["next"] = "/app/a/racing"
     cookie = sess.encode(SESSION_KEY, payload)
     out = call(
@@ -244,6 +280,30 @@ def test_callback_success_sets_session_and_activates_invited(
     assert any(c.startswith("__Host-wiki_session=") for c in set_cookies)
     assert any(c.startswith("__Host-wiki_oauth=;") and "Max-Age=0" in c for c in set_cookies)
     assert admin.get_profile(SUBJECT).status == "active"
+
+
+def test_callback_with_nonce_for_another_login_is_400(
+    monkeypatch: pytest.MonkeyPatch, rsa_key: Any, admin: Any
+) -> None:
+    admin.create_profile(SUBJECT, "test@example.com", "Test Person", "active")
+    s = Settings.from_env()
+    fake = _client(s, rsa_key, {"id_token": _id_token(rsa_key, s, nonce="someone-elses")})
+    monkeypatch.setattr(web_app, "authkit", lambda ctx: fake)
+    _, payload = fake.start()
+    cookie = sess.encode(SESSION_KEY, payload)
+    out = call(
+        event(
+            "GET",
+            "/app/callback",
+            query={"code": "c", "state": str(payload["state"])},
+            cookies={sess.OAUTH_COOKIE: cookie},
+        )
+    )
+    assert out["statusCode"] == 400 and "could not be verified" in out["body"]
+    assert not any(
+        c.startswith("__Host-wiki_session=")
+        for c in out.get("multiValueHeaders", {}).get("Set-Cookie", [])
+    )
 
 
 def test_post_without_csrf_is_403(session_cookie: str) -> None:

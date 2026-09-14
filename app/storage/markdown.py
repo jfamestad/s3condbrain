@@ -14,6 +14,13 @@ from typing import Any
 
 import yaml
 
+# Largest frontmatter block ``parse`` will interpret, in UTF-8 bytes; the write path
+# enforces the same ceiling (§10.2 limits are all far smaller than this).
+MAX_FRONTMATTER_BYTES = 16384
+# Deepest nesting of mappings/sequences ``parse`` will compose, the root mapping
+# counted as one level. Bounds composer recursion as well as attacker patience.
+MAX_FRONTMATTER_DEPTH = 32
+
 # A leading block: an opening ``---`` line, anything (non-greedy), then a closing
 # ``---`` line. The closing line may end the text without a trailing newline.
 _FRONTMATTER_RE = re.compile(
@@ -35,7 +42,53 @@ class Article:
 
     @property
     def seq(self) -> int:
-        return int(self.frontmatter.get("seq", 0))
+        """The server-maintained sequence number; ``0`` when absent or not a number.
+
+        Tolerant on purpose: one stored version with a hand-edited ``seq`` must not
+        make every history page 500 forever.
+        """
+        value = self.frontmatter.get("seq", 0)
+        if isinstance(value, bool):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+
+class _FrontmatterLoader(yaml.SafeLoader):
+    """``SafeLoader`` that refuses aliases and deep nesting.
+
+    ``safe_load`` still expands anchors/aliases, and a nine-level "billion laughs"
+    block costs nothing to compose but everything to copy afterwards. Frontmatter
+    has no legitimate use for an alias, so any ``*ref`` is a ``YAMLError`` and the
+    document is malformed. Nesting deeper than ``MAX_FRONTMATTER_DEPTH`` is refused
+    for the same reason (and before the composer can exhaust the stack).
+    """
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.YAMLError("aliases are not allowed in frontmatter")
+        return super().compose_node(parent, index)
+
+    def compose_sequence_node(self, anchor: Any) -> Any:
+        return self._nested(super().compose_sequence_node, anchor)
+
+    def compose_mapping_node(self, anchor: Any) -> Any:
+        return self._nested(super().compose_mapping_node, anchor)
+
+    def _nested(self, compose: Any, anchor: Any) -> Any:
+        self._depth += 1
+        if self._depth > MAX_FRONTMATTER_DEPTH:
+            raise yaml.YAMLError(f"frontmatter nests deeper than {MAX_FRONTMATTER_DEPTH} levels")
+        try:
+            return compose(anchor)
+        finally:
+            self._depth -= 1
 
 
 def _jsonable(value: Any) -> Any:
@@ -58,7 +111,9 @@ def parse(raw: bytes | str) -> Article:
 
     A missing or malformed frontmatter block yields an empty mapping and the
     whole text as body — storage never refuses to read what it holds. A block
-    that parses to something other than a mapping is treated as malformed.
+    that parses to something other than a mapping, exceeds ``MAX_FRONTMATTER_BYTES``,
+    uses a YAML alias, or nests deeper than ``MAX_FRONTMATTER_DEPTH`` is treated as
+    malformed in the same way.
 
     Args:
         raw: The stored object, as bytes (UTF-8, undecodable bytes replaced) or text.
@@ -71,8 +126,11 @@ def parse(raw: bytes | str) -> Article:
     match = _FRONTMATTER_RE.match(text)
     if match is None:
         return Article(frontmatter={}, body=text)
+    block = match.group("yaml")
+    if len(block.encode("utf-8")) > MAX_FRONTMATTER_BYTES:
+        return Article(frontmatter={}, body=text)
     try:
-        loaded = yaml.safe_load(match.group("yaml"))
+        loaded = yaml.load(block, Loader=_FrontmatterLoader)  # noqa: S506 - SafeLoader subclass
     except yaml.YAMLError:
         return Article(frontmatter={}, body=text)
     if not isinstance(loaded, dict):
@@ -103,4 +161,4 @@ def serialize(frontmatter: dict[str, Any], body: str) -> bytes:
     return f"---\n{block}---\n{body}".encode()
 
 
-__all__ = ["Article", "parse", "serialize"]
+__all__ = ["MAX_FRONTMATTER_BYTES", "MAX_FRONTMATTER_DEPTH", "Article", "parse", "serialize"]

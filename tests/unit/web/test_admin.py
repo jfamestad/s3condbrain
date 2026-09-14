@@ -4,11 +4,13 @@ people/grants/unowned/audit/delete pages, and the POSTs behind them.
 Three viewers share one subject (``SUBJECT``): a root owner, an owner of ``/racing``
 and an owner of nothing. The world around them: Josh owns ``/`` (bootstrap), Dana
 writes ``/racing/setup``, Pat reads ``/private``. A ``/racing`` owner must never see
-the word ``/private`` on any page.
+the word ``/private`` on any page — nor Pat's name, email or subject, nor be told
+whether an email they type belongs to anyone.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -310,17 +312,92 @@ def test_add_person_owner_of_nothing_is_403(
     assert out["statusCode"] == 403 and fake_workos.instances == []
 
 
-def test_add_person_existing_member_is_400_with_link(
+LOCATION_SHAPE = re.compile(r"^/app/admin/people/user_[^/?]+\?added=1&invite=(sent|none)$")
+
+
+def test_add_person_existing_member_is_granted_like_a_new_one(
+    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+) -> None:
+    """Pat exists but holds nothing under /racing. Adding her there is a grant and a
+    303 to her page — the same shape as a brand-new account — so the owner is never
+    told whether the email was known."""
+    form = {"display_name": "Someone", "node": "/racing/notes", "permission": "read"}
+    existing = post("/app/admin/people", cookie, {**form, "email": "PAT@example.com"})
+    assert existing["statusCode"] == 303
+    assert existing["headers"]["Location"] == f"/app/admin/people/{PAT}?added=1&invite=none"
+    assert fake_workos.instances == []  # no WorkOS user, no invitation
+    rows = {g.node: g for g in as_racing.grants_of(PAT)}
+    assert rows["/racing/notes"].permission is Permission.READ
+    assert rows["/racing/notes"].granted_by == SUBJECT
+    assert as_racing.get_profile(PAT).status == "active"  # untouched
+    page = get(f"/app/admin/people/{PAT}", cookie, {"added": "1", "invite": "none"})
+    assert page["statusCode"] == 200  # legitimately in scope now
+    assert "Pat can read everything under /racing/notes" in page["body"]
+    assert "emailed them a sign-in link" not in page["body"]
+
+    new = post("/app/admin/people", cookie, {**form, "email": "new@example.com"})
+    assert new["statusCode"] == 303
+    assert new["headers"]["Location"] == "/app/admin/people/user_new01?added=1&invite=sent"
+    assert fake_workos.instances[-1].created == [("new@example.com", "Someone", "")]
+    assert fake_workos.instances[-1].invited == ["new@example.com"]
+    assert existing["statusCode"] == new["statusCode"]
+    assert LOCATION_SHAPE.match(existing["headers"]["Location"])
+    assert LOCATION_SHAPE.match(new["headers"]["Location"])
+
+
+def test_add_person_existing_member_root_gets_the_same_grant(
     as_root: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
 ) -> None:
     out = post(
         "/app/admin/people",
         cookie,
-        {"email": "DANA@example.com", "display_name": "D", "node": "/", "permission": "read"},
+        {"email": "DANA@example.com", "display_name": "D", "node": "/", "permission": "write"},
     )
-    assert out["statusCode"] == 400
-    assert f"/app/admin/people/{DANA}" in out["body"]
+    assert out["statusCode"] == 303
+    assert out["headers"]["Location"] == f"/app/admin/people/{DANA}?added=1&invite=none"
+    assert "already a member" not in out.get("body", "")
     assert fake_workos.instances == []
+    rows = {g.node: g for g in as_root.grants_of(DANA)}
+    assert rows["/"].permission is Permission.WRITE and rows["/"].granted_by == SUBJECT
+
+
+def test_add_person_disabled_member_is_the_one_refusal_for_every_owner(
+    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS]
+) -> None:
+    as_racing.set_status(PAT, "disabled")
+    form = {"email": "pat@example.com", "node": "/racing/notes", "permission": "read"}
+    subtree = post("/app/admin/people", cookie, form)
+    as_racing.store.put_grant(Grant(SUBJECT, "/", Permission.OWN, JOSH, NOW))  # now root
+    root = post("/app/admin/people", cookie, form)
+    assert subtree["statusCode"] == root["statusCode"] == 400
+    assert admin_view.EMAIL_NOT_ADDABLE in subtree["body"]
+    assert subtree["body"] == root["body"]
+    for word in ("Pat", PAT, "pat@example.com", "disabled", "already a member"):
+        assert word not in subtree["body"], word
+    assert fake_workos.instances == []
+    assert [g.node for g in as_racing.grants_of(PAT)] == ["/private"]
+
+
+def test_add_person_existing_workos_user_with_profile_is_granted_too(
+    as_racing: GrantAdmin, cookie: str, fake_workos: type[FakeWorkOS], monkeypatch: Any
+) -> None:
+    """The typed email is new to us but WorkOS maps it to a subject that already has
+    a profile (their email changed upstream). Same answer as an email we knew."""
+    monkeypatch.setattr(
+        admin_view,
+        "WorkOSClient",
+        lambda key: FakeWorkOS(key, existing={"pat.new@example.com": PAT}),
+    )
+    out = post(
+        "/app/admin/people",
+        cookie,
+        {"email": "pat.new@example.com", "node": "/racing/notes", "permission": "read"},
+    )
+    assert out["statusCode"] == 303
+    assert out["headers"]["Location"] == f"/app/admin/people/{PAT}?added=1&invite=none"
+    assert fake_workos.instances[-1].created == [] and fake_workos.instances[-1].invited == []
+    assert {g.node for g in as_racing.grants_of(PAT)} == {"/private", "/racing/notes"}
+    assert as_racing.get_profile(PAT).email == "pat@example.com"  # profile untouched
 
 
 @pytest.mark.parametrize(
@@ -420,15 +497,79 @@ def test_grants_page_root(as_root: GrantAdmin, cookie: str) -> None:
     assert "Pat can read everything under /private" in body
     assert "Grant access" in body and REVOCATION in body
     assert "<strong>own</strong>" in body and "grant any of these" in body
-    assert f'value="{DANA}"' in body and f'value="{PAT}"' in body
+    # The full directory, by display name only.
+    for sub, name in ((JOSH, "Josh"), (DANA, "Dana"), (PAT, "Pat"), (SUBJECT, "Test Person")):
+        assert f'<option value="{sub}">{name}</option>' in body
+    assert "@example.com" not in body
+    assert 'name="email"' in body
 
 
 def test_grants_page_racing_owner_never_sees_private(as_racing: GrantAdmin, cookie: str) -> None:
+    """The dropdown holds only people with a grant under /racing — Dana and the viewer.
+    Pat (reads /private) and Josh (owns /) are absent by name, email and subject."""
     body = get("/app/admin/grants", cookie)["body"]
     assert "Dana can write everything under /racing/setup" in body
-    assert "/private" not in body
-    assert "Pat can read" not in body
+    assert f'<option value="{DANA}">Dana</option>' in body
+    assert f'<option value="{SUBJECT}">Test Person</option>' in body
+    assert body.count('<option value="user_') == 2
+    for word in ("/private", "Pat", PAT, "pat@example.com", JOSH, "josh@example.com"):
+        assert word not in body, word
+    assert "@example.com" not in body
+    assert 'name="email"' in body and "give their email" in body
     assert REVOCATION in body
+
+
+def test_grant_by_email_brings_a_member_into_scope(as_racing: GrantAdmin, cookie: str) -> None:
+    out = post(
+        "/app/admin/grants",
+        cookie,
+        {"subject": "", "email": "PAT@example.com", "node": "/racing/notes", "permission": "read"},
+    )
+    assert out["statusCode"] == 303 and out["headers"]["Location"] == "/app/admin/grants"
+    rows = {g.node: g for g in as_racing.grants_of(PAT)}
+    assert rows["/racing/notes"].permission is Permission.READ
+    assert rows["/racing/notes"].granted_by == SUBJECT
+    body = get("/app/admin/grants", cookie)["body"]
+    assert "Pat can read everything under /racing/notes (granted by Test Person" in body
+    assert f'<option value="{PAT}">Pat</option>' in body  # in scope now, so listed
+    assert "/private" not in body and "pat@example.com" not in body
+
+
+def test_grant_by_email_failure_is_one_sentence_whichever_the_reason(
+    as_racing: GrantAdmin, cookie: str
+) -> None:
+    form = {"subject": "", "node": "/racing/notes", "permission": "read"}
+    unknown = post("/app/admin/grants", cookie, {**form, "email": "nobody@example.com"})
+    as_racing.set_status(PAT, "disabled")
+    disabled = post("/app/admin/grants", cookie, {**form, "email": "pat@example.com"})
+    assert unknown["statusCode"] == disabled["statusCode"] == 400
+    assert admin_view.EMAIL_NOT_GRANTABLE in unknown["body"]
+    assert unknown["body"] == disabled["body"]
+    for word in ("Pat", PAT, "pat@example.com", "nobody@example.com", "disabled"):
+        assert word not in disabled["body"], word
+    assert [g.node for g in as_racing.grants_of(PAT)] == ["/private"]
+
+
+def test_grant_by_email_outside_scope_is_403_before_any_lookup(
+    as_racing: GrantAdmin, cookie: str
+) -> None:
+    form = {"subject": "", "node": "/private", "permission": "read"}
+    known = post("/app/admin/grants", cookie, {**form, "email": "pat@example.com"})
+    unknown = post("/app/admin/grants", cookie, {**form, "email": "nobody@example.com"})
+    assert known["statusCode"] == unknown["statusCode"] == 403
+    assert known["body"] == unknown["body"]
+    assert [g.node for g in as_racing.grants_of(PAT)] == ["/private"]
+
+
+def test_grant_needs_a_person_or_an_email(as_root: GrantAdmin, cookie: str) -> None:
+    out = post("/app/admin/grants", cookie, {"subject": "", "node": "/", "permission": "read"})
+    assert out["statusCode"] == 400 and "give their email" in out["body"]
+    out = post(
+        "/app/admin/grants",
+        cookie,
+        {"subject": "", "email": "not-an-email", "node": "/", "permission": "read"},
+    )
+    assert out["statusCode"] == 400 and "Give one email address" in out["body"]
 
 
 def test_grant_post_inside_scope(as_racing: GrantAdmin, cookie: str) -> None:

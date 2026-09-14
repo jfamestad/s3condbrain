@@ -71,6 +71,12 @@ jobs:
 
       - name: cdk synth (dev, all stacks)
         run: npx cdk synth -c env=dev -c certificateArn="$SYNTH_CERT_ARN" --quiet
+      - name: cdk synth (prod, all stacks)
+        # infra/config.py leaves the prod account unpinned until the first deploy and
+        # guard_account refuses to synth prod without one; `prodAccount` is the
+        # credential-less override for CI (docs/DEPLOY.md §3). An empty web client id
+        # is a synth error in prod, so a placeholder is passed for the same reason.
+        run: npx cdk synth -c env=prod -c prodAccount=000000000000 -c workosWebClientId=client_ci_placeholder -c certificateArn="$SYNTH_CERT_ARN" --quiet
 
       - name: Scan the deployment package for credential-shaped files
         # `make build` copies app/ into build/; a stray .env or key file would ride

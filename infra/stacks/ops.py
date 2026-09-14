@@ -6,7 +6,12 @@ Everything here watches or copies; nothing here serves a request.
   An email subscription is attached when context ``alertEmail`` is given. The topic
   is not KMS-encrypted on purpose: messages carry resource names and metric values,
   never article content, and an encrypted topic needs key-policy grants for three
-  more service principals.
+  more service principals. Its resource policy lets ``events.amazonaws.com`` publish
+  **only on behalf of this stack's rules** (``aws:SourceArn`` lists their ARNs) — the
+  CDK ``SnsTopic`` target would grant the service principal unconditionally, which
+  is any rule in any account, so the rules bind through ``_AlertsTarget`` instead.
+  The CloudWatch alarms need no statement: same-account alarm actions are allowed
+  without one, and none is written.
 * **CloudTrail** — one multi-region trail: management events (all), **S3 data events
   for the wiki bucket, write-only** (§12.7 — "what touched the bucket outside the
   application"), log-file validation on. Delivered to its own log bucket (SSE-KMS with
@@ -48,13 +53,13 @@ Outputs: AlertsTopicArn, TrailArn, TrailLogBucketName, BackupVaultName, BreakGla
 from __future__ import annotations
 
 import aws_cdk as cdk
+import jsii
 from aws_cdk import Duration, RemovalPolicy
 from aws_cdk import aws_backup as backup
 from aws_cdk import aws_cloudtrail as cloudtrail
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_events as events
-from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
@@ -127,6 +132,25 @@ def _retention(days: int) -> logs.RetentionDays:
         ) from e
 
 
+@jsii.implements(events.IRuleTarget)
+class _AlertsTarget:
+    """An SNS rule target that grants nothing.
+
+    ``aws_events_targets.SnsTopic.bind`` calls ``topic.grant_publish`` for the bare
+    ``events.amazonaws.com`` principal — no ``aws:SourceArn``, so every EventBridge
+    rule anywhere could publish here. This target only wires the ARN; the stack writes
+    the one conditioned statement itself once every rule exists
+    (``OpsStack._restrict_alerts_publishers``).
+    """
+
+    def __init__(self, topic: sns.ITopic) -> None:
+        self._topic = topic
+
+    def bind(self, rule: events.IRule, id: str | None = None) -> events.RuleTargetConfig:
+        del rule, id
+        return events.RuleTargetConfig(arn=self._topic.topic_arn, target_resource=self._topic)
+
+
 class OpsStack(cdk.Stack):
     """Trail, alerts, alarms, bucket-policy watch, and the grant-table backup plan."""
 
@@ -158,6 +182,7 @@ class OpsStack(cdk.Stack):
         self.alarms = self._create_alarms()
         self.break_glass_role = self._create_break_glass_role()
         self.break_glass_watch = self._create_break_glass_rule()
+        self._restrict_alerts_publishers([self.bucket_guard, self.break_glass_watch])
         self.backup_vault = self._create_backup_vault()
         self.backup_plan = self._create_backup_plan()
 
@@ -186,6 +211,26 @@ class OpsStack(cdk.Stack):
                 "Pass -c alertEmail=you@example.com or subscribe after deploy.",
             )
         return topic
+
+    def _restrict_alerts_publishers(self, rules: list[events.Rule]) -> None:
+        """The topic's one service statement: EventBridge may publish, for these rules.
+
+        ``aws:SourceArn`` is the rule ARN EventBridge presents when it delivers; a rule
+        in another account (or another stack here) is not on the list and is refused.
+        ``aws:SourceAccount`` is belt and braces for the same thing.
+        """
+        self.alerts.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="EventBridgeRulesInThisStack",
+                principals=[iam.ServicePrincipal("events.amazonaws.com")],
+                actions=["sns:Publish"],
+                resources=[self.alerts.topic_arn],
+                conditions={
+                    "ArnEquals": {"aws:SourceArn": [rule.rule_arn for rule in rules]},
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                },
+            )
+        )
 
     # ----------------------------------------------------------------- trail
 
@@ -299,7 +344,7 @@ class OpsStack(cdk.Stack):
                 },
             ),
         )
-        rule.add_target(targets.SnsTopic(self.alerts))
+        rule.add_target(_AlertsTarget(self.alerts))
         return rule
 
     # ---------------------------------------------------------------- alarms
@@ -449,7 +494,7 @@ class OpsStack(cdk.Stack):
                 },
             ),
         )
-        rule.add_target(targets.SnsTopic(self.alerts))
+        rule.add_target(_AlertsTarget(self.alerts))
         return rule
 
     # ---------------------------------------------------------------- backup

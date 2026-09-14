@@ -14,6 +14,7 @@ from app.auth.grants import GrantStore
 from app.auth.ratelimit import RateLimiter
 from app.auth.types import Resolution
 from app.config import Settings
+from app.errors import forbidden
 
 # JSON-RPC error codes (HANDOFF §6.2)
 PARSE_ERROR = -32700
@@ -75,10 +76,17 @@ class ToolContext:
     audit: AuditTrail = field(default_factory=AuditTrail)
 
     def require(self, path: str, needed: Any) -> Resolution:
-        """``grants.require`` that also records the grants used. Tools should call
-        this rather than ``ctx.grants.require`` directly."""
-        resolution = self.grants.require(self.subject, path, needed)
+        """Resolve, record, then enforce — so the audit line carries the grants a
+        decision depended on whether it was an allow or a deny (AS-10). Tools call
+        this rather than ``ctx.grants.require`` directly.
+
+        Raises:
+            ToolError: 403 ``forbidden`` when ``needed`` is not satisfied.
+        """
+        resolution = self.grants.resolve(self.subject, path)
         self.audit.note(resolution)
+        if not resolution.allows(needed):
+            raise forbidden()
         return resolution
 
     @property

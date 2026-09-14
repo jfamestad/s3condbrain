@@ -11,10 +11,11 @@ from app.auth.credentials import Shape
 from app.auth.types import Permission
 from app.config import MAX_ARTICLE_BYTES, SCOPE_WRITE
 from app.mcp.protocol import ToolContext
+from app.mcp.tools._common import MAX_FRONTMATTER_BYTES
 from app.mcp.tools.create_article import TOOL
 from app.mcp.tools.read_article import TOOL as READ
 from app.storage.articles import META_ACTOR, META_KIND
-from app.storage.markdown import parse
+from app.storage.markdown import parse, serialize
 from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
 
 PATH = "/racing/setup/rear-bar.md"
@@ -170,9 +171,42 @@ def test_content_limit_counts_utf8_bytes(ctx: ToolContext) -> None:
     )
 
 
-def test_content_at_limit_is_accepted(ctx: ToolContext) -> None:
-    result = call(TOOL, ctx, path=PATH, content="x" * MAX_ARTICLE_BYTES, frontmatter=FM)
+def _overhead() -> int:
+    """Bytes the frontmatter block adds to the stored object, ``seq`` included."""
+    return len(serialize({**FM, "seq": 1}, ""))
+
+
+def test_object_at_limit_is_accepted(ctx: ToolContext) -> None:
+    content = "x" * (MAX_ARTICLE_BYTES - _overhead())
+    result = call(TOOL, ctx, path=PATH, content=content, frontmatter=FM)
     assert result["seq"] == 1
+
+
+def test_object_over_limit_is_400_even_when_content_fits(
+    ctx: ToolContext, minter: FakeMinter
+) -> None:
+    """The 1 MiB ceiling is on the stored object (§6.3), frontmatter included."""
+    content = "x" * (MAX_ARTICLE_BYTES - _overhead() + 1)
+    assert len(content.encode()) <= MAX_ARTICLE_BYTES
+    expect_error(TOOL, ctx, 400, "bad_request", path=PATH, content=content, frontmatter=FM)
+    assert minter.mint_count == 0
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        {**FM, "title": "t" * 201},
+        {**FM, "tags": ["x"] * 21},
+        {**FM, "status": "published"},
+        {**FM, "verified": [{"by": "not-an-actor"}]},
+        {**FM, "notes": "n" * MAX_FRONTMATTER_BYTES},
+    ],
+)
+def test_frontmatter_over_limits_is_400_and_mints_nothing(
+    ctx: ToolContext, minter: FakeMinter, frontmatter: dict[str, Any]
+) -> None:
+    expect_error(TOOL, ctx, 400, "bad_request", path=PATH, content="x", frontmatter=frontmatter)
+    assert minter.mint_count == 0
 
 
 @pytest.mark.parametrize("content", [None, 7, ["x"]])
@@ -216,3 +250,36 @@ def test_write_grant_elsewhere_is_403(
 
 def test_s3_access_denied_is_403(denied_ctx: ToolContext) -> None:
     expect_error(TOOL, denied_ctx, 403, "forbidden", path=PATH, content="x", frontmatter=FM)
+
+
+# --- audit (AS-10) -----------------------------------------------------------------------
+
+
+def test_grants_used_are_audited(ctx: ToolContext) -> None:
+    call(TOOL, ctx, path=PATH, content="x", frontmatter=FM)
+    assert ("/", "own") in ctx.audit.grants_used
+
+
+def test_ancestor_write_grant_is_audited(
+    make_ctx: Callable[..., ToolContext], seed_grant: Callable[..., None]
+) -> None:
+    seed_grant("user_writer", "/racing", Permission.WRITE)
+    writer = make_ctx("user_writer")
+    call(TOOL, writer, path=PATH, content="x", frontmatter=FM)
+    assert writer.audit.grants_used == [("/racing", "write")]
+
+
+def test_insufficient_grant_is_audited_on_denial(
+    make_ctx: Callable[..., ToolContext], seed_grant: Callable[..., None], minter: FakeMinter
+) -> None:
+    """AS-10 wants the grants the decision depended on — a denial included."""
+    seed_grant("user_reader", "/racing", Permission.READ)
+    reader = make_ctx("user_reader")
+    expect_error(TOOL, reader, 403, "forbidden", path=PATH, content="x", frontmatter=FM)
+    assert ("/racing", "read") in reader.audit.grants_used
+    assert minter.mint_count == 0
+
+
+def test_zero_grant_denial_audits_nothing(nobody: ToolContext) -> None:
+    expect_error(TOOL, nobody, 403, "forbidden", path=PATH, content="x", frontmatter=FM)
+    assert nobody.audit.grants_used == []

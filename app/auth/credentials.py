@@ -119,10 +119,12 @@ def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> di
             folder shape: an article path is taken to mean its parent folder.
 
     Returns:
-        An IAM policy document. A READ shape carries **no** ``s3:ListBucket``; a LIST
-        shape carries it on the bucket ARN with an ``s3:prefix`` StringLike condition
-        of ``list_prefix(path) + "*"``; a WRITE shape adds ``s3:PutObject`` and
-        ``kms:GenerateDataKey``; a MAINTAIN shape is WRITE + LIST over the folder plus
+        An IAM policy document. A READ shape carries **no** ``s3:ListBucket``, only
+        ``s3:ListBucketVersions`` pinned to the target — ``StringEquals`` on the exact
+        key for an article, ``StringLike`` on the prefix for a folder; a LIST shape
+        carries ``s3:ListBucket`` on the bucket ARN with an ``s3:prefix`` StringLike
+        condition of ``list_prefix(path) + "*"``; a WRITE shape adds ``s3:PutObject``
+        and ``kms:GenerateDataKey``; a MAINTAIN shape is WRITE + LIST over the folder plus
         ``s3:PutObjectTagging`` on that folder's ``_listing.json`` key only (§8.6,
         §8.9 — the listing write carries a tag, and a tagged ``PutObject`` needs the
         tagging permission too).
@@ -158,16 +160,25 @@ def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> di
             }
         )
     else:
-        # READ and WRITE: version history of exactly this key (§8.3 ``ListObjectVersions``
-        # needs ``s3:ListBucketVersions`` on the bucket). The prefix condition pins the
-        # request to this key; longer keys sharing the prefix are filtered by the caller.
-        versions_prefix = s3_key(path) if _is_article(_normalise(path)) else list_prefix(path)
+        # READ and WRITE: version history (§8.3 ``ListObjectVersions`` needs
+        # ``s3:ListBucketVersions`` on the bucket). For an article the condition is an
+        # exact ``StringEquals`` on the key: every version walk passes ``Prefix=key``
+        # verbatim (``ArticleStore.list_versions``, ``unarchive_article``), and a
+        # ``StringLike key*`` would also admit ``key.bak.md`` and ``key/…`` — sibling
+        # names an article grant must not see (§4.6). A folder keeps the prefix
+        # wildcard: history of anything beneath it.
+        normalised = _normalise(path)
+        condition: dict[str, Any] = (
+            {"StringEquals": {"s3:prefix": s3_key(normalised)}}
+            if _is_article(normalised)
+            else {"StringLike": {"s3:prefix": [f"{list_prefix(normalised)}*"]}}
+        )
         statements.append(
             {
                 "Effect": "Allow",
                 "Action": ["s3:ListBucketVersions"],
                 "Resource": f"arn:aws:s3:::{bucket}",
-                "Condition": {"StringLike": {"s3:prefix": [f"{versions_prefix}*"]}},
+                "Condition": condition,
             }
         )
     if shape is Shape.MAINTAIN:
