@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Unowned grants · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>Unowned grants</h1>
+<p>Grants outlive their granter. When an owner is disabled, or stops owning the place they granted on, what they granted stays in force and is listed here for a person to review. Nothing on this page is removed on its own.</p>
+{% if rows %}
+<ul>
+  {% for r in rows %}
+  <li>{{ r.text }} — <em>{{ r.reason }}</em>
+    <form method="post" action="{{ prefix }}/admin/grants/revoke" style="display:inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="subject" value="{{ r.grant.subject }}">
+      <input type="hidden" name="node" value="{{ r.grant.node }}">
+      <input type="hidden" name="back" value="{{ prefix }}/admin/unowned">
+      <button class="btn danger" type="submit">Revoke</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>Every grant in the tree was made by someone who still owns the place. Nothing to review.</p>
+{% endif %}
+<p class="muted">Grants written by the install itself (the first owner of <code>/</code>) are not reviewed here; they have no granter to lose.</p>
+{% include "admin/_revocation.html" %}
+{% endblock %}

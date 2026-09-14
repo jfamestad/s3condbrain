@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.display_name or profile.email }} · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>{{ profile.display_name or profile.email }} <span class="tag">{{ profile.status }}</span></h1>
+<p class="muted">{{ profile.email }}{% if is_self %} — this is you{% endif %}</p>
+
+{% if added %}
+<div class="notice">
+  <p>Added.
+  {% if invite == "sent" %}WorkOS has emailed them a sign-in link.{% endif %}
+  Now send them the connector instructions below, however the family communicates.</p>
+</div>
+{% if invite == "failed" %}
+<div class="warn">The sign-in email could not be sent through the WorkOS API — it has been logged. Invite them by hand from the WorkOS dashboard (Users → Invite), then send the block below.</div>
+{% endif %}
+{% endif %}
+
+{% if profile.status == "disabled" %}
+<div class="warn">Disabled. They cannot sign in here and every tool call answers as if they had no access. Their grants below are kept, not removed (grants outlive their granter), so enabling them restores exactly what they had.</div>
+{% elif profile.status == "invited" %}
+<p class="muted">Invited: they have not signed in yet. The status becomes <em>active</em> on their first sign-in.</p>
+{% endif %}
+
+<h2>Access</h2>
+{% if grants %}
+<ul>
+  {% for g in grants %}
+  <li>{{ g.text }}
+    <form method="post" action="{{ prefix }}/admin/grants/revoke" style="display:inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="subject" value="{{ g.grant.subject }}">
+      <input type="hidden" name="node" value="{{ g.grant.node }}">
+      <input type="hidden" name="back" value="{{ prefix }}/admin/people/{{ profile.subject }}">
+      <button class="btn danger" type="submit">Revoke</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No access{% if not scope.is_root %} in your part of the tree{% endif %}.</p>
+{% endif %}
+<p class="muted">To give them more, use <a href="{{ prefix }}/admin/grants">grants</a>.</p>
+{% include "admin/_revocation.html" %}
+
+<h2>Connector instructions</h2>
+<p>Copy this and send it to them. It only works after they have signed in once through the email link.</p>
+<textarea readonly rows="9">{{ connector }}</textarea>
+
+{% if scope.is_root and not is_self %}
+<h2>{% if profile.status == "disabled" %}Enable{% else %}Disable{% endif %}</h2>
+<form method="post" action="{{ prefix }}/admin/people/{{ profile.subject }}/status">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if profile.status == "disabled" %}
+  <input type="hidden" name="status" value="active">
+  <button class="btn" type="submit">Enable</button>
+  {% else %}
+  <input type="hidden" name="status" value="disabled">
+  <p class="muted">Disabling takes effect on their next click here and their next tool call. It does not revoke their grants; revoke those above if they should not come back with them. It does not remove them at WorkOS — the runbook's revocation procedure covers that.</p>
+  <button class="btn danger" type="submit">Disable</button>
+  {% endif %}
+</form>
+{% endif %}
+{% endblock %}

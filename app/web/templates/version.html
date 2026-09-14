@@ -1,0 +1,14 @@
+{% extends "article.html" %}
+{% block title %}Version {{ version_seq }} of {{ page.title }} · Wiki{% endblock %}
+{% block banner %}
+<div class="warn">
+  <p><strong>Version {{ version_seq }}</strong> from {{ version_at or "an unknown time" }} by {{ version_actor_label }}{% if version_actor_label != version_actor %} <span class="muted">({{ version_actor }})</span>{% endif %}{% if version_kind != "write" %} <span class="tag">{{ version_kind }}</span>{% endif %}.
+  This is a historical snapshot, not the current page.</p>
+  {% if version_note %}<p>{{ version_note }}</p>{% endif %}
+  <p><a href="{{ page.article_href }}">Current page</a> · <a href="{{ page.history_href }}">History</a></p>
+</div>
+{% endblock %}
+{% block footer_links %}
+<p><a href="{{ page.article_href }}">Current page</a> · <a href="{{ page.history_href }}">History of this page</a></p>
+<p class="muted">{{ history_note }}</p>
+{% endblock %}

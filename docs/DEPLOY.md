@@ -139,8 +139,16 @@ decide whether WorkOS is acceptable at all (§2). In order:
    WorkOS.
 6. Disable self-signup for the environment (§2 check 7) and restrict CIMD origins if
    the dashboard allows it (check 6).
-7. The web application (increment F) needs its own OAuth client and a Secrets Manager
-   secret; that wave's notes describe the secret's shape.
+7. **The web application's own client.** In WorkOS create a second OAuth client —
+   confidential, authorization code + PKCE, redirect URI exactly
+   `https://<domain>/app/callback`. Put its client id in `infra/config.py`
+   (`workos_web_client_id`). After `make deploy`, open the secret named by the
+   `WebSecretArn` output and replace the two `REPLACE-ME` values: `client_secret`
+   (that client's secret) and `api_key` (a WorkOS **management API key**, `sk_…`,
+   from API Keys in the dashboard — used only to create users and send invitations).
+   `session_key` is generated for you; leave it. Until the placeholders are replaced,
+   login fails at the token exchange and "Add a person" answers 503 with a message
+   pointing here.
 
 ## 6. First owner
 
@@ -148,18 +156,19 @@ The bootstrap grant is written with **operator** credentials, never a function's
 the MCP role cannot write grants, by design (§8.8).
 
 ```sh
+make grant-owner SUBJECT=user_01H... EMAIL=you@example.com NAME="Your Name" \
+  TABLE=<GrantTableName output>
+# or directly:
 uv run python scripts/grant_owner.py --bootstrap \
-  --subject user_01H... \
+  --subject user_01H... --email you@example.com --name "Your Name" \
   --table <GrantTableName output>
 ```
 
 `--subject` is the WorkOS user id (the token's `sub`) — sign in once through the
 gate script and read it from the decoded token. `--bootstrap` bypasses the owner
-guard for exactly this row (`own` on `/` in an empty table) and logs loudly. Later
-grants go through the admin console or the same script with `--granter`.
-
-> `make grant-owner` in the Makefile passes neither `--bootstrap` nor `--granter`,
-> so it errors as written; use the script directly until the target is fixed.
+guard for exactly this row (`own` on `/` in an empty table), writes the PROFILE row
+the web application requires at login, and logs loudly. It refuses once `/` has an
+owner. Later grants go through the admin console or the same script with `--granter`.
 
 ## 7. Add the connector
 

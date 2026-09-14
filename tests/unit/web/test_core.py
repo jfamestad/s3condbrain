@@ -297,3 +297,8 @@ def test_render_disables_html_and_rewrites_internal_links() -> None:
     assert 'href="/app/a/racing/setup/rear-bar.md"' in out
     assert 'rel="noopener noreferrer"' in out
     assert sections("# A\n\ntext\n\n## B c\n") == [(1, "A"), (2, "B c")]
+
+
+def test_sections_ignore_headings_inside_code_fences() -> None:
+    md = "# Real\n\n```\n# not a heading\n```\n\n~~~\n## nor this\n~~~\n\n## Also real\n"
+    assert sections(md) == [(1, "Real"), (2, "Also real")]

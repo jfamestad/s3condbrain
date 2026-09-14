@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Admin · Wiki{% endblock %}
+{% block content %}
+{% if not scope.owns_anything %}
+{% include "admin/_nothing.html" %}
+{% else %}
+{% include "admin/_nav.html" %}
+<h1>Admin</h1>
+<p>
+  {% if scope.is_root %}
+  You own <strong>/</strong> — the whole tree. Everything below is yours to administer, including who is a member.
+  {% else %}
+  You administer {% for root in scope.roots %}<strong>{{ root }}</strong>{% if not loop.last %}, {% endif %}{% endfor %} and everything beneath. Grants elsewhere in the tree are not shown to you.
+  {% endif %}
+</p>
+<dl class="kv">
+  <dt>People</dt>
+  <dd>{{ people }} {% if scope.is_root %}member{{ '' if people == 1 else 's' }}{% else %}with access here{% endif %} — <a href="{{ prefix }}/admin/people">people</a>, including adding someone</dd>
+  <dt>Grants</dt>
+  <dd>{{ grants }} in your part of the tree — <a href="{{ prefix }}/admin/grants">grants</a>, including granting and revoking</dd>
+  {% if scope.is_root %}
+  <dt>Unowned grants</dt>
+  <dd>Grants whose granter is disabled or no longer owns the place — <a href="{{ prefix }}/admin/unowned">review</a>. Nothing is removed without you.</dd>
+  {% endif %}
+  <dt>Audit</dt>
+  <dd>What happened to a path, from the tool-call log — <a href="{{ prefix }}/admin/audit">look up a path</a></dd>
+</dl>
+<h2>What the three permissions mean</h2>
+<ul>
+  <li><strong>read</strong> — the live article and the version history of that path.</li>
+  <li><strong>write</strong> — create, update, move, archive and unarchive. Includes read.</li>
+  <li><strong>own</strong> — everything, on that place and beneath it, including granting any of these to anyone. Owners administer their part of the tree here.</li>
+</ul>
+<p class="muted">Editing is not redaction: a prior version still says what it said to anyone who can read the path. To put something out of reach, move it; to erase it entirely, open <code>{{ prefix }}/admin/delete/&lt;path&gt;</code> for the break-glass runbook — it lists the versions and the commands, and deletes nothing itself.</p>
+{% endif %}
+{% endblock %}

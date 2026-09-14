@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Hard delete · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>Hard delete <code>{{ path }}</code></h1>
+<div class="warn"><strong>This page deletes nothing.</strong> A person performs these steps under the break-glass role; every assumption of that role is alarmed. No function, tool or button in this system can delete a version — by design, not by omission. Viewing this page has been logged.</div>
+<p>When it is warranted: content that must not exist in any version, or a legal request. Not for "it is untidy" — that is archiving, which any writer can do. Deletion, like revocation, is prospective: it does not pull text back out of anyone's conversation.</p>
+
+<h2>Versions of <code>{{ key }}</code> ({{ versions|length }})</h2>
+<p>A hard delete is every version, or it is not a delete.</p>
+<table>
+  <thead><tr><th>Version id</th><th>When</th><th>Who</th><th>Kind</th><th>Bytes</th></tr></thead>
+  <tbody>
+  {% for v in versions %}
+  <tr><td><code>{{ v.version_id }}</code></td><td>{{ v.at }}</td><td>{{ v.actor }}</td><td>{{ v.kind }}</td><td>{{ v.size }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Procedure (RUNBOOK §3)</h2>
+<ol>
+  <li><strong>Open a ticket</strong> — anything with a date and your name: the path, the version ids (all of them, above), why, who asked. The alert email that arrives when you assume the role is the second half of the record; keep both.</li>
+  <li><strong>Assume the break-glass role</strong>. In the console: switch role, account id, role name <code>wiki-&lt;env&gt;-break-glass</code>. Or on the CLI (the role ARN is the <code>BreakGlassRoleArn</code> stack output; the session name lands in CloudTrail, so put the ticket in it):
+<pre>CREDS=$(aws sts assume-role --role-arn &lt;BreakGlassRoleArn&gt; \
+  --role-session-name "hard-delete-$(date +%Y%m%d)-&lt;ticket&gt;" --query Credentials --output json)
+export AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId &lt;&lt;&lt;"$CREDS") \
+       AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey &lt;&lt;&lt;"$CREDS") \
+       AWS_SESSION_TOKEN=$(jq -r .SessionToken &lt;&lt;&lt;"$CREDS")</pre></li>
+  <li><strong>List every version</strong>, delete markers included, and compare with the table above:
+<pre>aws s3api list-object-versions --bucket {{ bucket }} --prefix "{{ key }}" \
+  --query '{v:Versions[?Key==`{{ key }}`].VersionId, d:DeleteMarkers[?Key==`{{ key }}`].VersionId}'</pre></li>
+  <li><strong>Delete each version.</strong> In production the versions are under Object Lock governance retention; the flag must be passed or S3 refuses. In dev (no Object Lock) omit <code>--bypass-governance-retention</code>.
+<pre>{{ delete_commands }}</pre>
+  <p class="muted"><code>delete-object</code> without <code>--version-id</code> only adds a delete marker; that is not a hard delete.</p></li>
+  <li><strong>Confirm</strong> the listing in step 3 is empty, then <code>unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN</code> (or sign out of the switched role).</li>
+  <li>The folder's <code>_listing.json</code> still names the article until the next rebuild; any write in that folder forces one. Search follows the listing.</li>
+  <li><strong>Close the ticket</strong> with the alert email attached and the count of versions removed. Note whether the content had reached anyone's context before the delete.</li>
+</ol>
+<p class="muted">Why the role has no <code>PutObject</code>: so a break-glass session cannot quietly rewrite history as well as erase it. Restores are RUNBOOK §1.</p>
+{% endblock %}

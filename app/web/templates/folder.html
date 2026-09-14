@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ folder }} · Wiki{% endblock %}
+{% block listing %}
+{% if folders %}
+<h2>Folders</h2>
+<ul>
+  {% for f in folders %}
+  <li><a href="{{ f.href }}">{{ f.name }}/</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if articles %}
+<h2>Pages</h2>
+<table>
+  <thead><tr><th>Page</th><th>Tags</th><th>Status</th><th>Trust</th><th>Seq</th></tr></thead>
+  <tbody>
+  {% for a in articles %}
+  <tr>
+    <td>
+      <a href="{{ a.href }}">{{ a.title }}</a>
+      {% if a.title != a.name %}<span class="muted"> · {{ a.name }}</span>{% endif %}
+      {% if a.description %}<div class="muted">{{ a.description }}</div>{% endif %}
+    </td>
+    <td>{% for t in a.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+    <td>{{ a.status }}{% if a.stale %} <span class="tag">stale</span>{% endif %}</td>
+    <td><span class="trust {{ a.trust }}">{{ a.trust }}</span></td>
+    <td class="muted">{{ a.seq }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% if not folders and not articles %}
+<p class="muted">Nothing here yet.</p>
+{% endif %}
+{% endblock %}
+{% block content %}
+<nav class="crumbs">
+  {% for c in crumbs %}{% if not loop.last %}<a href="{{ c.href }}">{{ c.name }}</a> › {% else %}<span>{{ c.name }}</span>{% endif %}{% endfor %}
+</nav>
+<h1>{{ "Top level" if folder == "/" else folder }}</h1>
+{{ self.listing() }}
+{% endblock %}

@@ -43,6 +43,10 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--permission", default="own", choices=[x.value for x in Permission])
     p.add_argument("--granter", help="subject of the owner making the grant (token sub)")
     p.add_argument(
+        "--email", help="with --bootstrap: the first owner's email, for their PROFILE row"
+    )
+    p.add_argument("--name", default="", help="with --bootstrap: display name for the PROFILE row")
+    p.add_argument(
         "--bootstrap",
         action="store_true",
         help="bypass the owner guard for the first `own /` row in an empty table",
@@ -54,11 +58,14 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
         p.error("--granter is required unless --bootstrap")
     if a.bootstrap and (a.node != "/" or a.permission != Permission.OWN.value):
         p.error("--bootstrap only writes `own` on `/`")
+    if a.bootstrap and not a.email:
+        p.error("--bootstrap needs --email so the first owner can sign in to the web app")
     return a
 
 
-def _bootstrap(admin: GrantAdmin, subject: str) -> Grant:
-    """Write ``own /`` without an owner to vouch for it.
+def _bootstrap(admin: GrantAdmin, subject: str, email: str = "", name: str = "") -> Grant:
+    """Write ``own /`` without an owner to vouch for it, plus the PROFILE row the
+    web application requires at login (default deny, §3.3).
 
     Raises:
         NotAnOwner: ``/`` already has an owner — once there is one, they are the
@@ -75,6 +82,8 @@ def _bootstrap(admin: GrantAdmin, subject: str) -> Grant:
         granted_at=datetime.now(UTC).isoformat(),
     )
     admin.store.put_grant(grant)
+    if email and admin.get_profile(subject) is None:
+        admin.create_profile(subject, email, name or email, "active")
     logger.warning(
         "admin_write",
         action="bootstrap",
@@ -93,7 +102,7 @@ def main(argv: Sequence[str] | None = None, dynamodb_resource: Any | None = None
     try:
         if a.bootstrap:
             print("BOOTSTRAP: bypassing the owner guard for the first `own /` row", file=sys.stderr)
-            grant = _bootstrap(admin, a.subject)
+            grant = _bootstrap(admin, a.subject, a.email or "", a.name or "")
         else:
             grant = admin.grant(a.granter, a.subject, a.node, Permission(a.permission))
     except NotAnOwner as exc:

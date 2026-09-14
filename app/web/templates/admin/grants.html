@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Grants · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>Grants</h1>
+{% if not scope.is_root %}
+<p class="muted">Showing grants at or below {% for root in scope.roots %}<strong>{{ root }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}. Grants elsewhere are not yours to see or change.</p>
+{% endif %}
+{% if groups %}
+{% for group in groups %}
+<h3><code>{{ group.node }}</code></h3>
+<ul>
+  {% for g in group.grants %}
+  <li>{{ g.text }}
+    <form method="post" action="{{ prefix }}/admin/grants/revoke" style="display:inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="subject" value="{{ g.grant.subject }}">
+      <input type="hidden" name="node" value="{{ g.grant.node }}">
+      <input type="hidden" name="back" value="{{ prefix }}/admin/grants">
+      <button class="btn danger" type="submit">Revoke</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endfor %}
+{% else %}
+<p>No grants in your part of the tree yet.</p>
+{% endif %}
+{% include "admin/_revocation.html" %}
+
+<h2>Grant access</h2>
+<ul>
+  <li><strong>read</strong> — the live article and the version history of that path.</li>
+  <li><strong>write</strong> — create, update, move, archive and unarchive there; includes read.</li>
+  <li><strong>own</strong> — everything on that place and beneath it, and they can grant any of these to anyone beneath it.</li>
+</ul>
+<p class="muted">A grant on a folder covers everything beneath it; a grant on one article covers that article only. There are no deny rules — to carve out an exception, move the article. Editing is not redaction: readers of a path can read its history.</p>
+<form method="post" action="{{ prefix }}/admin/grants">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="back" value="{{ prefix }}/admin/grants">
+  <label for="subject">Person</label>
+  <select id="subject" name="subject" required>
+    <option value="">— choose —</option>
+    {% for p in grantees %}
+    <option value="{{ p.subject }}">{{ names[p.subject] }}{% if p.email and p.email != names[p.subject] %} ({{ p.email }}){% endif %}</option>
+    {% endfor %}
+  </select>
+  <p class="muted">Someone not listed is not a member yet — <a href="{{ prefix }}/admin/people">add them</a> first.</p>
+  <label for="node">Where</label>
+  <input type="text" id="node" name="node" required placeholder="{{ scope.roots[0] }}" value="{{ scope.roots[0] if scope.roots|length == 1 else '' }}">
+  <p class="muted">An absolute path under {% for root in scope.roots %}<code>{{ root }}</code>{% if not loop.last %} or {% endif %}{% endfor %}: a folder like <code>/racing/setup</code> or an article like <code>/racing/setup/rear-bar.md</code>.</p>
+  <label for="permission">Permission</label>
+  <select id="permission" name="permission">
+    {% for p in permissions %}
+    <option value="{{ p }}"{% if p == "read" %} selected{% endif %}>{{ p }}</option>
+    {% endfor %}
+  </select>
+  <p><button class="btn primary" type="submit">Grant</button></p>
+</form>
+{% endblock %}

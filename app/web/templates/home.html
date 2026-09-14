@@ -1,0 +1,26 @@
+{% extends "folder.html" %}
+{% block title %}Wiki{% endblock %}
+{% block content %}
+<h1>Wiki</h1>
+<div class="notice">
+  <p><strong>What you can see.</strong> Nothing here is public: you see exactly what an owner has granted you — a folder grant shows everything beneath it, a page grant shows that one page. Anything else looks as if it does not exist. Searching covers every grant you hold; browsing covers folder grants only.</p>
+  {% if grant_rows %}
+  <p>You can:</p>
+  <ul>
+    {% for g in grant_rows %}
+    <li>
+      {{ g.permission }}
+      {% if g.is_article %}the page <a href="{{ g.href }}">{{ g.node }}</a>
+      {% elif g.node == "/" %}everything (<a href="{{ g.href }}">top level</a>)
+      {% else %}everything under <a href="{{ g.href }}">{{ g.node }}</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>You have not been granted anything yet. Ask an owner.</p>
+  {% endif %}
+</div>
+{% if root_visible %}
+{{ self.listing() }}
+{% endif %}
+{% endblock %}

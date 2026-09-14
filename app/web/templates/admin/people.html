@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}People · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>People</h1>
+{% if not scope.is_root %}
+<p class="muted">You see people only insofar as they hold access under {% for root in scope.roots %}<strong>{{ root }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+{% endif %}
+{% if rows %}
+{% for row in rows %}
+<h3><a href="{{ prefix }}/admin/people/{{ row.profile.subject }}">{{ row.profile.display_name or row.profile.email }}</a>
+  <span class="tag">{{ row.profile.status }}</span></h3>
+<p class="muted">{{ row.profile.email }}</p>
+{% if row.grants %}
+<ul>
+  {% for g in row.grants %}
+  <li>{{ g.text }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No access{% if not scope.is_root %} here{% endif %} yet.</p>
+{% endif %}
+{% endfor %}
+{% else %}
+<p>Nobody holds access here yet.</p>
+{% endif %}
+{% include "admin/_revocation.html" %}
+
+<h2>Add a person</h2>
+<p>They will receive a sign-in email from WorkOS. After they sign in once on web or desktop, send them the connector instructions shown on their page.</p>
+<form method="post" action="{{ prefix }}/admin/people">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="email">Email</label>
+  <input type="email" id="email" name="email" required>
+  <label for="display_name">Name</label>
+  <input type="text" id="display_name" name="display_name" placeholder="How they should appear here">
+  <label for="node">Where they get access</label>
+  <input type="text" id="node" name="node" required placeholder="{{ scope.roots[0] }}" value="{{ scope.roots[0] if scope.roots|length == 1 else '' }}">
+  <p class="muted">A folder (<code>/racing</code>) or one article (<code>/racing/setup.md</code>), under {% for root in scope.roots %}<code>{{ root }}</code>{% if not loop.last %} or {% endif %}{% endfor %}.</p>
+  <label for="permission">Permission</label>
+  <select id="permission" name="permission">
+    {% for p in permissions %}
+    <option value="{{ p }}"{% if p == "read" %} selected{% endif %}>{{ p }}</option>
+    {% endfor %}
+  </select>
+  <p class="muted">read: the article and its history · write: also create, update, move, archive · own: everything, and they can grant beneath.</p>
+  <p><button class="btn primary" type="submit">Add and send the sign-in email</button></p>
+</form>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}History of {{ path }} · Wiki{% endblock %}
+{% block content %}
+<nav class="crumbs">
+  {% for c in crumbs %}{% if not loop.last %}<a href="{{ c.href }}">{{ c.name }}</a> › {% else %}<span>{{ c.name }}</span>{% endif %}{% endfor %}
+</nav>
+<h1>History of <code>{{ path }}</code></h1>
+<p><a href="{{ article_href }}">Current page</a></p>
+<p class="muted">{{ history_note }}</p>
+<table>
+  <thead><tr><th>Seq</th><th>When</th><th>Who</th><th>What</th><th>Size</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td><a href="{{ r.href }}">{{ r.seq }}</a></td>
+    <td>{{ r.at }}</td>
+    <td>{{ r.actor_label }}{% if r.actor_label != r.actor %} <span class="muted">({{ r.actor }})</span>{% endif %}</td>
+    <td>
+      {{ r.kind }}
+      {% if r.moved_to %}<span class="muted">→ {{ r.moved_to }}</span>{% endif %}
+      {% if r.moved_from %}<span class="muted">← {{ r.moved_from }}</span>{% endif %}
+    </td>
+    <td class="muted">{% if r.size is not none %}{{ r.size }} B{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if next_href %}
+<p><a href="{{ next_href }}">Older versions</a></p>
+{% endif %}
+{% if owner_links %}
+<p class="muted">You own this path: <a href="{{ owner_links.audit }}">what happened to it</a> · <a href="{{ owner_links.delete }}">hard-delete runbook</a></p>
+{% endif %}
+{% if continues_at %}
+<div class="notice">
+  <p>Earlier history lives at <a href="{{ continues_href }}">{{ continues_at }}</a> (separate permission). This page arrived here by a move; what it said before the move stays at the old path, under that path's grants.</p>
+</div>
+{% endif %}
+{% endblock %}

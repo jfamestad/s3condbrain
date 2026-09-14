@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Audit · Admin · Wiki{% endblock %}
+{% block content %}
+{% include "admin/_nav.html" %}
+<h1>What happened to a path</h1>
+<p>Every tool call — reads and writes, allowed and denied — is one line in the tool-call log. This looks up the last {{ days }} days for one path. It answers "what happened to my article", by person and by time; it is not a search of content.</p>
+<form method="get" action="{{ prefix }}/admin/audit">
+  <label for="path">Path</label>
+  <input type="text" id="path" name="path" value="{{ path }}" placeholder="/racing/setup/rear-bar.md" required>
+  <p><button class="btn primary" type="submit">Look up</button></p>
+</form>
+{% if path %}
+<h2><code>{{ path }}</code></h2>
+{% if unconfigured %}
+<div class="warn">The audit log is not configured for this deployment (<code>MCP_LOG_GROUP</code> is unset), so nothing can be looked up here. The log itself is still written.</div>
+{% elif error %}
+<div class="warn">{{ error }}</div>
+{% else %}
+{% if partial %}
+<div class="warn">The log query had not finished within the time a page can wait; these are the rows that had arrived. Try again for a complete answer.</div>
+{% endif %}
+{% if rows %}
+<table>
+  <thead><tr><th>When</th><th>Who</th><th>Did</th><th>Outcome</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.at }}</td>
+    <td>{{ r.who }}</td>
+    <td>{{ r.tool }}</td>
+    <td>{{ r.decision }}{% if r.status %} <span class="muted">({{ r.status }})</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted">Grant changes are logged separately by this application, not in the tool-call log.</p>
+{% else %}
+<p>No tool calls touched this path in the last {{ days }} days.</p>
+{% endif %}
+{% endif %}
+{% endif %}
+{% endblock %}

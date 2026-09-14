@@ -1,6 +1,6 @@
 # Wiki Substrate — Engineering Handoff
 
-**Instance:** `wiki.famestad.com` · **Date:** 13 September 2026 · **Status:** ready to build, blocked on the §2 gate
+**Instance:** `wiki.famestad.com` · **Date:** 13 September 2026 · **Status:** v1 built (skeleton + increments A–G, 1,002 unit tests, synth-clean for dev and prod); **deployment blocked on the §2 gate** (CIMD not yet enabled in WorkOS) and an AWS development account
 
 A deployable knowledge server: one permissioned, versioned tree of markdown articles per organization, managed by agents, reachable as a remote MCP server. What an instance is *for* is decided by what gets put in it.
 
@@ -1398,15 +1398,17 @@ Automate §12.8 as `tests/security/`. The route table. Zero-grant user sees noth
 
 | | Increment | Brings |
 | --- | --- | --- |
-| `A` | Listing projection and search | `_listing.json` written conditionally on every mutation, lazy rebuild, folder-visibility propagation; `search` walks projections under folder grants and reads frontmatter for article grants, filtered by path against the grant set. Titles appear in listings for the first time. |
-| `B` | Move, archive, unarchive | Pointer-first move, archive tombstones, restoring versions, the access-impact report. The first operations that touch two keys — hence after the security tests exist. |
-| `C` | History | `list_versions` (with the per-entry `HeadObject`) and `read_version` under `wiki.read`, and the per-path rule with no silent traversal. |
-| `D` | Real grants | Grants beyond the hardcoded row, the grant-write guard, the audit log, per-subject rate limits. **Nothing here is an MCP tool**, and nothing here runs under the MCP function's role. |
-| `E` | Second user | Invitation, magic link, connector instructions. The first time the permission model does real work. |
-| `F` | Web application | Read view and admin console. The largest single build and the surface your family judges it by. |
-| `G` | Production | Second AWS account, production WorkOS environment, its own resource indicator, the full pre-launch checklist. |
+| `A` ✓ | Listing projection and search | `_listing.json` written conditionally on every mutation, lazy rebuild, folder-visibility propagation; `search` walks projections under folder grants and reads frontmatter for article grants, filtered by path against the grant set. Titles appear in listings for the first time. |
+| `B` ✓ | Move, archive, unarchive | Pointer-first move, archive tombstones, restoring versions, the access-impact report. The first operations that touch two keys — hence after the security tests exist. |
+| `C` ✓ | History | `list_versions` (with the per-entry `HeadObject`) and `read_version` under `wiki.read`, and the per-path rule with no silent traversal. |
+| `D` ✓ | Real grants | Grants beyond the hardcoded row, the grant-write guard, the audit log, per-subject rate limits. **Nothing here is an MCP tool**, and nothing here runs under the MCP function's role. |
+| `E` ✓ | Second user | Invitation, magic link, connector instructions. The first time the permission model does real work. |
+| `F` ✓ | Web application | Read view and admin console. The largest single build and the surface your family judges it by. |
+| `G` ◐ | Production | Second AWS account, production WorkOS environment, its own resource indicator, the full pre-launch checklist. |
 
 **Increment E is the first honest test of the product.** Everything before it works whether or not the permission model is right, because there is only one person.
+
+**Build state, 13 September 2026.** A–F are built and unit-tested; G's code (ops stack, CI, runbook, prod config) is built, and what remains of G is operational: the second AWS account, the production WorkOS environment, DNS, the restore rehearsal, and running `tests/security/` against a live instance. `docs/DEPLOY.md` is the sequence. The only things ever proven against real AWS or real WorkOS are the ones the §2 gate and `make aws-tests` prove — neither has run yet.
 
 ### 11.6 The web application (increment F)
 

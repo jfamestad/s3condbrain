@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Search · Wiki{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<form method="get" action="{{ prefix }}/search">
+  <label for="q">Words in a page's title, description or tags</label>
+  <input type="text" id="q" name="q" value="{{ q }}" maxlength="400" autofocus>
+  <label for="prefix">Only under this folder <span class="muted">(optional, e.g. /racing)</span></label>
+  <input type="text" id="prefix" name="prefix" value="{{ folder_prefix }}" maxlength="512">
+  <p><button class="btn primary" type="submit">Search</button></p>
+</form>
+{% if prefix_error %}
+<div class="warn"><p>{{ prefix_error }}</p></div>
+{% endif %}
+{% if searched %}
+{% if hits %}
+<h2>Results</h2>
+<table>
+  <thead><tr><th>Page</th><th>Tags</th><th>Status</th><th>Trust</th></tr></thead>
+  <tbody>
+  {% for a in hits %}
+  <tr>
+    <td>
+      <a href="{{ a.href }}">{{ a.title }}</a>
+      <div class="muted">{{ a.path }}</div>
+      {% if a.description %}<div>{{ a.description }}</div>{% endif %}
+    </td>
+    <td>{% for t in a.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+    <td>{{ a.status }}{% if a.stale %} <span class="tag">stale</span>{% endif %}</td>
+    <td><span class="trust {{ a.trust }}">{{ a.trust }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if truncated %}<p class="muted">More matched than are shown. Narrow the words or the folder.</p>{% endif %}
+{% else %}
+<p class="muted">Nothing matched. Search covers only what you have been granted; nothing matching and nothing you may see look the same.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

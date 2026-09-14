@@ -382,12 +382,25 @@ class TestGrantOwnerScript:
 
     def test_bootstrap_on_empty_table(self, ddb: Any, settings: Any, log_lines, capsys) -> None:
         rc = grant_owner.main(
-            self._argv("--bootstrap", "--subject", ROOT, settings=settings), dynamodb_resource=ddb
+            self._argv(
+                "--bootstrap",
+                "--subject",
+                ROOT,
+                "--email",
+                "root@x",
+                "--name",
+                "Root",
+                settings=settings,
+            ),
+            dynamodb_resource=ddb,
         )
         assert rc == 0
         store = GrantStore(settings.grant_table, ddb)
         grants = store.all_grants(ROOT)
         assert len(grants) == 1
+        # The first owner can sign in to the web app: a PROFILE row exists (§3.3).
+        profile = GrantAdmin(settings.grant_table, dynamodb_resource=ddb).get_profile(ROOT)
+        assert profile is not None and profile.email == "root@x" and profile.status == "active"
         assert grants[0].node == "/"
         assert grants[0].permission is Permission.OWN
         assert grants[0].granted_by == grant_owner.BOOTSTRAP_GRANTER
@@ -400,7 +413,8 @@ class TestGrantOwnerScript:
         self, seeded: GrantAdmin, ddb: Any, settings: Any, capsys
     ) -> None:
         rc = grant_owner.main(
-            self._argv("--bootstrap", "--subject", BOB, settings=settings), dynamodb_resource=ddb
+            self._argv("--bootstrap", "--subject", BOB, "--email", "bob@x", settings=settings),
+            dynamodb_resource=ddb,
         )
         assert rc == 2
         assert "refused" in capsys.readouterr().err
@@ -409,9 +423,10 @@ class TestGrantOwnerScript:
     @pytest.mark.parametrize(
         "extra",
         [
-            ["--bootstrap", "--node", "/racing"],
-            ["--bootstrap", "--permission", "read"],
-            ["--bootstrap", "--granter", ROOT],
+            ["--bootstrap", "--email", "r@x", "--node", "/racing"],
+            ["--bootstrap", "--email", "r@x", "--permission", "read"],
+            ["--bootstrap", "--email", "r@x", "--granter", ROOT],
+            ["--bootstrap"],  # no --email: the first owner could never sign in
             [],  # neither --bootstrap nor --granter
         ],
     )

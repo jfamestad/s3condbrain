@@ -45,7 +45,18 @@ def render(markdown: str, app_prefix: str = "/app") -> str:
 def sections(markdown: str) -> list[tuple[int, str]]:
     """``(level, heading text)`` for every ATX heading — the in-page table of contents."""
     out: list[tuple[int, str]] = []
+    fence: str | None = None
     for line in markdown.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            if fence is None:
+                fence = marker
+            elif marker == fence:
+                fence = None
+            continue
+        if fence is not None:
+            continue
         m = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
         if m:
             out.append((len(m.group(1)), escape(m.group(2))))

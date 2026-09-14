@@ -1,0 +1,11 @@
+<p class="crumbs">
+  <a href="{{ prefix }}/admin">Admin</a>
+  {% if scope.owns_anything %}
+  · <a href="{{ prefix }}/admin/people">People</a>
+  · <a href="{{ prefix }}/admin/grants">Grants</a>
+  {% if scope.is_root %}
+  · <a href="{{ prefix }}/admin/unowned">Unowned grants</a>
+  {% endif %}
+  · <a href="{{ prefix }}/admin/audit">Audit</a>
+  {% endif %}
+</p>
