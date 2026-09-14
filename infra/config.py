@@ -51,7 +51,7 @@ ENVIRONMENTS: dict[str, EnvConfig] = {
         region="us-west-2",
         domain="wiki-dev.famestad.com",
         hosted_zone_name=None,
-        authkit_domain="https://REPLACE-ME.authkit.app",
+        authkit_domain="https://spirited-smile-45-staging.authkit.app",
         object_lock=False,
         retain_data=False,
     ),

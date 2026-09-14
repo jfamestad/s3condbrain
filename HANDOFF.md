@@ -56,7 +56,7 @@ Hundreds of articles today; nothing in the design forecloses ten thousand. First
 
 ## 2. Start here — the blocking gate
 
-**Nothing else in this document should begin until these checks pass.** They take about half an hour against a free WorkOS staging environment. Checks 1–4 are the gate proper and the fourth one can reverse the entire authorization decision; checks 5–7 confirm assumptions the rest of the design leans on. Run them against the **development** instance URL (§9.6) — production is registered separately at increment G.
+**Nothing else in this document should begin until these checks pass.** They take about half an hour against a free WorkOS staging environment, and `scripts/oauth_gate.py` runs checks 1, 3, 4 and 5 as one command (two browser rounds) and prints reminders for the rest. Checks 1–4 are the gate proper and the fourth one can reverse the entire authorization decision; checks 5–7 confirm assumptions the rest of the design leans on. Run them against the **development** instance URL (§9.6) — production is registered separately at increment G.
 
 1. **Metadata.** Fetch the AuthKit authorization-server metadata. Confirm it advertises **both** `client_id_metadata_document_supported: true` **and** `none` in `token_endpoint_auth_methods_supported`. Claude requires both to select CIMD; with either missing it silently falls back to hunting for a registration endpoint.
 2. **Registration.** Register `https://wiki-dev.famestad.com/mcp` as a resource indicator.
@@ -401,7 +401,7 @@ Where a gateway handles CORS itself it typically **ignores CORS headers returned
 | --- | --- | --- |
 | No token, or invalid token | HTTP | `401` with `WWW-Authenticate` naming the resource metadata URL |
 | Token lacks the required **scope** | **HTTP** | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="wiki.write"` — re-authorization will help |
-| Token has the scope, principal lacks the **grant** | Tool error | `403 forbidden`, plain authorization denial, no scope named |
+| Token has the scope, principal lacks the **grant** | Tool error | Writes: `403 forbidden`, plain authorization denial, no scope named. Reads and listings: `404`, because a `403` would confirm the path exists (§10.1) |
 | `if_version` stale | Tool error | `409` with the current version and body |
 
 **Two levels, deliberately.** The first two rows are HTTP responses emitted before any tool runs; step-up re-authorization is something a client does on an HTTP `403` with a `WWW-Authenticate` challenge, and nothing inside a `200` tool result will trigger it. Every other error is an MCP tool error (`isError: true`, §10.14) — the call reached the tool and the tool declined. In v1 both scopes are advertised in the resource metadata and requested together at consent, so the scope row is correct but idle; it is the grant row that carries the privacy weight.
@@ -793,7 +793,7 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
 "article_path": {
   "type": "string",
   "pattern": "^/(?:[a-z0-9][a-z0-9._-]*/)*[a-z0-9][a-z0-9._-]*\\.md$",
-  "maxLength": 1024,
+  "maxLength": 512,
   "description": "Absolute article path, lowercase, '.md' suffixed. Example
     '/racing/setup/rear-bar.md'. Segments may not begin with '_' (reserved for
     system objects) and the names 'index.md' and 'log.md' are reserved."
@@ -801,7 +801,7 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
 "folder_path": {
   "type": "string",
   "pattern": "^/$|^/(?:[a-z0-9][a-z0-9._-]*)(?:/[a-z0-9][a-z0-9._-]*)*$",
-  "maxLength": 1024,
+  "maxLength": 512,
   "description": "Absolute folder path with no trailing slash; '/' is the root."
 },
 "version": {
@@ -851,7 +851,8 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
                                      "at": { "type": "string", "format": "date-time" } } } },
     "seq":         { "type": "integer", "minimum": 1, "readOnly": true,
                      "description": "Server-maintained. Increments on every write.
-                       Rejected if supplied by a caller." }
+                       Rejected on create; ignored on update, where an agent handing
+                       back a block it read will naturally include it." }
   }
 },
 "source": {
@@ -1016,7 +1017,7 @@ Current live version of one article: frontmatter plus body. Returns a forward re
   { "$ref": "#/$defs/forward_reference" } ] }
 ```
 
-**Errors:** `403` without `read`; `404` for no such path or an archived article.
+**Errors:** `404` for no such path, an archived article, **or a path the caller lacks `read` on** — absence and denial are indistinguishable (§10.1).
 
 ### 10.6 `resolve_reference` — no scope · no grant
 
@@ -1070,7 +1071,7 @@ The version chain of one path, newest first. **Returns that path's chain only.**
 
 > **Do not traverse.** `continues_at` is a link the caller may follow, not a traversal the server performs. Following it means a fresh `list_versions` call whose authorization is evaluated against that path. Silent traversal would let a grant at the new path read history the old path governs — precisely the disclosure the per-path rule prevents.
 
-**Errors:** `403` without `read` on the path; `404` for no such path.
+**Errors:** `404` for no such path or one the caller lacks `read` on.
 
 ### 10.8 `read_version` — `wiki.read` · `read` on path
 
@@ -1268,7 +1269,8 @@ Decided here rather than left open. Each is cheap to reverse before implementati
 
 | Call | Reasoning |
 | --- | --- |
-| Unreadable folders return `404`, not `403` | Preserves the rule that absence and denial are indistinguishable. A `403` would confirm the folder exists. |
+| Unreadable paths return `404`, not `403` — every read tool | Preserves the rule that absence and denial are indistinguishable. A `403` would confirm the path exists. Writes still return `403`: a caller attempting a write has already named the path. |
+| Paths cap at 512 characters | A `list` session policy carries the folder path twice and must stay under STS's 2 KB inline limit; 512 leaves headroom for any bucket name. Nobody has a 512-character path. |
 | Paths are lowercase, rejected rather than normalized | Case-sensitive paths over a case-insensitive-ish client surface produce articles that differ only in capitalisation. A schema rejection is visible to the agent; a silent rewrite is not. |
 | Article bodies cap at 1 MiB | Far above anything a person writes, far below anything that troubles the storage layer, and it makes "too large to read" a write-time error rather than a read-time surprise. |
 | `frontmatter` replaces rather than merges on update | Merge semantics make removing a tag impossible to express. Omit the field to leave it alone. |
@@ -1357,7 +1359,7 @@ Bucket with versioning, SSE-KMS with a customer-managed key, account-level publi
 *Proves:* §4.8 — and **the negative cases prove it properly.** The `list` case is the one whose failure mode is a disclosure rather than an error, which is why it is a test and not a note.
 
 **Step 4 — WorkOS configuration.**
-Staging environment, CIMD enabled, the dev resource indicator registered. **Run all seven §2 checks before writing the authorizer.**
+Staging environment, CIMD enabled, the dev resource indicator registered. **Run all seven §2 checks before writing the authorizer** — `scripts/oauth_gate.py` does the four that need a browser.
 *Proves:* the authorization server behaves as assumed. If check 4 fails, stop and switch providers — everything downstream is unaffected. If 5, 6 or 7 fail, note the consequence in §14 and continue.
 
 **Step 5 — Authorizer.**

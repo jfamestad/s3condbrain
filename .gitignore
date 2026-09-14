@@ -10,3 +10,4 @@ cdk.out/
 cdk.context.json
 .env
 *.egg-info/
+.claude/

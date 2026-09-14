@@ -10,12 +10,31 @@ This module is the only caller of ``AssumeRole`` in the codebase (§11.2).
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
 import boto3
+
+from app.config import ARTICLE_PREFIX
+
+# AssumeRole's floor; credentials live at least this long regardless of cache policy.
+_DURATION_SECONDS = 900
+# Never hand out a cached credential in its final minute — clock skew and in-flight
+# requests both eat into it.
+_EXPIRY_MARGIN_SECONDS = 60
+_SESSION_NAME_PREFIX = "wiki-"
+_SESSION_NAME_MAX = 64
+_SESSION_NAME_BAD_CHARS = re.compile(r"[^A-Za-z0-9_=,.@-]")
+
+_READ_OBJECT_ACTIONS = ["s3:GetObject", "s3:GetObjectVersion"]
+_READ_KMS_ACTIONS = ["kms:Decrypt"]
+_WRITE_OBJECT_ACTIONS = [*_READ_OBJECT_ACTIONS, "s3:PutObject"]
+_WRITE_KMS_ACTIONS = [*_READ_KMS_ACTIONS, "kms:GenerateDataKey"]
+_LIST_ACTIONS = ["s3:ListBucket"]
 
 
 class Shape(StrEnum):
@@ -26,9 +45,34 @@ class Shape(StrEnum):
     WRITE = "write"  # READ + PutObject, kms:GenerateDataKey
 
 
+def _normalise(path: str) -> str:
+    """Absolute path with any trailing slash dropped; ``/`` stays ``/``.
+
+    Raises:
+        ValueError: when ``path`` is not absolute.
+    """
+    if not path.startswith("/"):
+        raise ValueError(f"path must be absolute: {path!r}")
+    return path.rstrip("/") or "/"
+
+
+def _is_article(path: str) -> bool:
+    return path.endswith(".md")
+
+
+def _folder_prefix(folder: str) -> str:
+    """``/racing`` → ``a/racing/``; ``/`` → ``a/``. ``folder`` must be normalised."""
+    if folder == "/":
+        return ARTICLE_PREFIX
+    return f"{ARTICLE_PREFIX}{folder[1:]}/"
+
+
 def s3_key(path: str) -> str:
     """``/racing/x.md`` → ``a/racing/x.md``. Folder ``/racing`` → ``a/racing/``. Root → ``a/``."""
-    raise NotImplementedError
+    p = _normalise(path)
+    if _is_article(p):
+        return f"{ARTICLE_PREFIX}{p[1:]}"
+    return _folder_prefix(p)
 
 
 def s3_resource(bucket: str, path: str) -> str:
@@ -37,12 +81,21 @@ def s3_resource(bucket: str, path: str) -> str:
     An article path yields the exact key ARN. A folder path yields ``.../a/<folder>/*``
     (root: ``.../a/*``). The scope is the *operation's target*, never the grant node.
     """
-    raise NotImplementedError
+    key = s3_key(path)
+    if key.endswith("/"):
+        key += "*"
+    return f"arn:aws:s3:::{bucket}/{key}"
 
 
 def list_prefix(path: str) -> str:
-    """Value for the ``s3:prefix`` condition on a folder: ``a/racing/`` (root: ``a/``)."""
-    raise NotImplementedError
+    """Value for the ``s3:prefix`` condition on a folder: ``a/racing/`` (root: ``a/``).
+
+    An article path yields its parent folder's prefix.
+    """
+    p = _normalise(path)
+    if _is_article(p):
+        p = p.rsplit("/", 1)[0] or "/"
+    return _folder_prefix(p)
 
 
 def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> dict[str, Any]:
@@ -57,11 +110,38 @@ def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> di
     Returns:
         An IAM policy document. A READ shape carries **no** ``s3:ListBucket``; a LIST
         shape carries it on the bucket ARN with an ``s3:prefix`` StringLike condition
-        of ``list_prefix(path) + "*"`` (and ``""``/the exact prefix for delimiter
-        listings); a WRITE shape adds ``s3:PutObject`` and ``kms:GenerateDataKey``.
+        of ``list_prefix(path) + "*"``; a WRITE shape adds ``s3:PutObject`` and
+        ``kms:GenerateDataKey``.
         Must stay well inside the 2 KB inline limit.
+
+    Raises:
+        ValueError: on an unknown shape or a relative path.
     """
-    raise NotImplementedError
+    shape = Shape(shape)
+    object_actions = _WRITE_OBJECT_ACTIONS if shape is Shape.WRITE else _READ_OBJECT_ACTIONS
+    kms_actions = _WRITE_KMS_ACTIONS if shape is Shape.WRITE else _READ_KMS_ACTIONS
+    statements: list[dict[str, Any]] = [
+        {"Effect": "Allow", "Action": list(object_actions), "Resource": s3_resource(bucket, path)},
+        {"Effect": "Allow", "Action": list(kms_actions), "Resource": kms_key_arn},
+    ]
+    if shape is Shape.LIST:
+        # StringLike ``a/racing/*`` matches ``a/racing/`` itself (``*`` may be empty), so
+        # delimiter listings of the folder pass, and nothing shorter or elsewhere does.
+        # A request with no Prefix has no ``s3:prefix`` key and fails the condition.
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": list(_LIST_ACTIONS),
+                "Resource": f"arn:aws:s3:::{bucket}",
+                "Condition": {"StringLike": {"s3:prefix": [f"{list_prefix(path)}*"]}},
+            }
+        )
+    return {"Version": "2012-10-17", "Statement": statements}
+
+
+def _session_name(subject: str) -> str:
+    cleaned = _SESSION_NAME_BAD_CHARS.sub("-", subject)
+    return f"{_SESSION_NAME_PREFIX}{cleaned}"[:_SESSION_NAME_MAX]
 
 
 class CredentialMinter:
@@ -89,11 +169,25 @@ class CredentialMinter:
         sts_client: Any | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        raise NotImplementedError
+        self._role_arn = role_arn
+        self._bucket = bucket
+        self._kms_key_arn = kms_key_arn
+        # The cache may drop a credential sooner than AWS does, never later.
+        self._ttl = min(cache_seconds, _DURATION_SECONDS - _EXPIRY_MARGIN_SECONDS)
+        self._sts = sts_client
+        self._clock = clock
+        self._cache: dict[tuple[str, Shape, str], tuple[float, boto3.Session]] = {}
+        self._mint_count = 0
 
     @property
     def mint_count(self) -> int:
-        raise NotImplementedError
+        return self._mint_count
+
+    @property
+    def _sts_client(self) -> Any:
+        if self._sts is None:
+            self._sts = boto3.client("sts")
+        return self._sts
 
     def mint(self, subject: str, shape: Shape, path: str) -> boto3.Session:
         """Return a boto3 Session whose credentials are scoped by ``session_policy``.
@@ -101,11 +195,33 @@ class CredentialMinter:
         Cached per *(subject, shape, path)* for ``cache_seconds``. The role session
         name carries the subject so CloudTrail attributes every object touch.
         """
-        raise NotImplementedError
+        shape = Shape(shape)
+        key = (subject, shape, path)
+        now = self._clock()
+        cached = self._cache.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+        policy = session_policy(shape, self._bucket, self._kms_key_arn, path)
+        response = self._sts_client.assume_role(
+            RoleArn=self._role_arn,
+            RoleSessionName=_session_name(subject),
+            Policy=json.dumps(policy, separators=(",", ":")),
+            DurationSeconds=_DURATION_SECONDS,
+        )
+        self._mint_count += 1
+        creds = response["Credentials"]
+        session = boto3.Session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        )
+        self._cache[key] = (now + self._ttl, session)
+        return session
 
     def s3(self, subject: str, shape: Shape, path: str) -> Any:
         """``self.mint(...).client("s3")`` — the client every storage call uses."""
-        raise NotImplementedError
+        return self.mint(subject, shape, path).client("s3")
 
 
 __all__ = [

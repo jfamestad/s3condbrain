@@ -4,6 +4,8 @@ PY_VERSION := 3.13
 LAMBDA_PLATFORM := aarch64-manylinux2014
 BUILD := build
 CDK ?= npx cdk
+CERT_ARN ?=
+CDK_CTX := -c env=$(ENV) $(if $(CERT_ARN),-c certificateArn=$(CERT_ARN),)
 
 .PHONY: help sync test lint typecheck build synth deploy destroy security aws-tests clean grant-owner
 
@@ -26,7 +28,7 @@ typecheck: ## mypy on app
 build: ## Package both Lambda functions for arm64 / py$(PY_VERSION)
 	rm -rf $(BUILD)
 	mkdir -p $(BUILD)/authorizer $(BUILD)/mcp
-	uv export --no-dev --no-group infra --no-hashes --format requirements-txt > $(BUILD)/requirements.txt
+	uv export --no-dev --no-group infra --no-hashes --no-emit-project --no-color --format requirements-txt -o $(BUILD)/requirements.txt
 	uv pip install --quiet --no-deps --no-compile \
 	  --python-platform $(LAMBDA_PLATFORM) --python-version $(PY_VERSION) \
 	  --target $(BUILD)/mcp -r $(BUILD)/requirements.txt
@@ -37,14 +39,14 @@ build: ## Package both Lambda functions for arm64 / py$(PY_VERSION)
 	cp -R app $(BUILD)/authorizer/app
 	find $(BUILD) -name '__pycache__' -type d -prune -exec rm -rf {} +
 
-synth: build ## cdk synth for ENV (default dev)
-	$(CDK) synth -c env=$(ENV)
+synth: build ## cdk synth for ENV (default dev); CERT_ARN=... when no hosted zone is configured
+	$(CDK) synth $(CDK_CTX)
 
 deploy: build ## cdk deploy all stacks for ENV
-	$(CDK) deploy -c env=$(ENV) --all --require-approval never
+	$(CDK) deploy $(CDK_CTX) --all --require-approval never
 
 destroy: ## cdk destroy for ENV (dev only — prod buckets are retained)
-	$(CDK) destroy -c env=$(ENV) --all
+	$(CDK) destroy $(CDK_CTX) --all
 
 security: ## §12.8 checks against a deployed instance (WIKI_BASE_URL required)
 	uv run pytest -m security -o addopts=""
