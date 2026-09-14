@@ -234,8 +234,10 @@ def test_grants_used_are_audited(ctx: ToolContext, existing: dict[str, Any]) -> 
     assert ("/", "own") in ctx.audit.grants_used
 
 
-def test_s3_access_denied_is_403(denied_ctx: ToolContext) -> None:
-    expect_error(TOOL, denied_ctx, 403, "forbidden", path=PATH, if_version="v")
+def test_s3_access_denied_on_the_read_is_404(denied_ctx: ToolContext) -> None:
+    """A 403 on the ``GetObject`` under the key's own WRITE credential is a missing
+    key in production (§8.5), so it reads as 404."""
+    expect_error(TOOL, denied_ctx, 404, "not_found", path=PATH, if_version="v")
 
 
 def test_s3_access_denied_on_put_is_403(

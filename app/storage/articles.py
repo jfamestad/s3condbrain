@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -36,6 +37,10 @@ _DENIED_CODES = frozenset({"AccessDenied", "403"})
 # did not land; re-read before retrying", which is what PreconditionFailed conveys.
 _PRECONDITION_CODES = frozenset({"PreconditionFailed", "ConditionalRequestConflict", "412"})
 
+# Stdlib, not Powertools: this module takes no logger, and Lambda's root handler
+# forwards WARNING and above to CloudWatch on its own.
+_log = logging.getLogger(__name__)
+
 
 class PreconditionFailed(Exception):
     """S3 returned 412: the ``If-Match`` / ``If-None-Match`` condition did not hold."""
@@ -43,7 +48,16 @@ class PreconditionFailed(Exception):
 
 class AccessDenied(Exception):
     """S3 returned 403 under the minted credential. Tools map this to a plain 403
-    or, for reads, to 404 (absence and denial are indistinguishable — §10.1)."""
+    or, for reads, to 404 (absence and denial are indistinguishable — §10.1).
+
+    Real S3 answers ``HeadObject``/``GetObject`` on a **missing** key with 403, not
+    404, unless the caller holds ``s3:ListBucket`` — which READ and WRITE credentials
+    deliberately do not (§8.5). Under a credential minted for exactly one key that 403
+    can only mean *absent*: the session policy grants the key and the bucket policy
+    denies only non-TLS and other accounts. ``get``/``head``/``get_version`` take
+    ``absent_on_denied=True`` for the tools that probe a possibly-absent key under such
+    a credential; moto answers 404 there, so unit tests never see the difference.
+    """
 
 
 @dataclass
@@ -116,6 +130,21 @@ def _is_precondition(error: ClientError) -> bool:
     return _code(error) in _PRECONDITION_CODES or _status(error) == 412
 
 
+def _denied_as_absent(operation: str, key: str) -> None:
+    """Record a 403 that a caller chose to read as "absent" (``absent_on_denied``).
+
+    One WARNING per occurrence, naming the verb and the key and nothing else, so a
+    genuine misconfiguration — a KMS grant missing, a session policy that no longer
+    matches the key — still shows up in CloudWatch instead of vanishing into 404s.
+    """
+    _log.warning(
+        "s3 403 on %s of %s read as absent under a key-scoped credential",
+        operation,
+        key,
+        extra={"operation": operation, "key": key},
+    )
+
+
 def _quoted(etag: str) -> str:
     """S3 accepts ``If-Match`` with or without quotes; always send it quoted."""
     return etag if etag.startswith('"') else f'"{etag}"'
@@ -159,11 +188,15 @@ class ArticleStore:
     def __init__(self, bucket: str) -> None:
         self.bucket = bucket
 
-    def get(self, s3: Any, path: str) -> StoredObject | None:
+    def get(self, s3: Any, path: str, *, absent_on_denied: bool = False) -> StoredObject | None:
         """``GetObject``. Returns ``None`` on NoSuchKey / 404.
 
+        Args:
+            absent_on_denied: Treat a 403 as absence too — only right when ``s3`` was
+                minted for exactly this key (see ``AccessDenied``). Logged each time.
+
         Raises:
-            AccessDenied: on 403.
+            AccessDenied: on 403, unless ``absent_on_denied``.
         """
         key = key_for(path)
         try:
@@ -172,6 +205,9 @@ class ArticleStore:
             if _is_not_found(error):
                 return None
             if _is_denied(error):
+                if absent_on_denied:
+                    _denied_as_absent("GetObject", key)
+                    return None
                 raise AccessDenied(path) from error
             raise
         body = response["Body"].read()
@@ -185,11 +221,17 @@ class ArticleStore:
             metadata=dict(response.get("Metadata") or {}),
         )
 
-    def get_version(self, s3: Any, path: str, version_id: str) -> StoredObject | None:
+    def get_version(
+        self, s3: Any, path: str, version_id: str, *, absent_on_denied: bool = False
+    ) -> StoredObject | None:
         """``GetObject?versionId=``. ``None`` on 404 / NoSuchVersion.
 
+        Args:
+            absent_on_denied: As for ``get`` — a 403 under a credential minted for
+                exactly this key means the key or version is not there.
+
         Raises:
-            AccessDenied: on 403.
+            AccessDenied: on 403, unless ``absent_on_denied``.
         """
         key = key_for(path)
         try:
@@ -198,6 +240,9 @@ class ArticleStore:
             if _is_not_found(error) or _code(error) in ("NoSuchVersion", "InvalidArgument"):
                 return None
             if _is_denied(error):
+                if absent_on_denied:
+                    _denied_as_absent("GetObjectVersion", key)
+                    return None
                 raise AccessDenied(path) from error
             raise
         body = response["Body"].read()
@@ -303,11 +348,14 @@ class ArticleStore:
         entries = entries[:limit]
         return entries, _encode_cursor(key, entries[-1].version_id or "")
 
-    def head(self, s3: Any, path: str) -> StoredObject | None:
+    def head(self, s3: Any, path: str, *, absent_on_denied: bool = False) -> StoredObject | None:
         """``HeadObject`` — etag and metadata only; ``None`` on 404.
 
+        Args:
+            absent_on_denied: As for ``get``.
+
         Raises:
-            AccessDenied: on 403.
+            AccessDenied: on 403, unless ``absent_on_denied``.
         """
         key = key_for(path)
         try:
@@ -316,6 +364,9 @@ class ArticleStore:
             if _is_not_found(error):
                 return None
             if _is_denied(error):
+                if absent_on_denied:
+                    _denied_as_absent("HeadObject", key)
+                    return None
                 raise AccessDenied(path) from error
             raise
         return StoredObject(

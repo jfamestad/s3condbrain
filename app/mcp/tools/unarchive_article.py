@@ -145,14 +145,14 @@ def _optional_version(args: dict[str, Any]) -> str | None:
 def _tombstone_at(st: ArticleStore, s3: Any, path: str) -> StoredObject:
     """The current object, which must be an archive tombstone.
 
+    ``s3`` is the WRITE credential for exactly this key, so S3's 403 on a missing
+    key (no ``s3:ListBucket`` — §8.5) is absence.
+
     Raises:
         ToolError: 404 when the path was never used or holds anything but a
-            tombstone (a live article, a move pointer); 403 when S3 refuses.
+            tombstone (a live article, a move pointer).
     """
-    try:
-        current = st.get(s3, path)
-    except AccessDenied:
-        raise forbidden() from None
+    current = st.get(s3, path, absent_on_denied=True)
     if current is None:
         raise not_found()
     if parse(current.body).type != TYPE_ARCHIVED:
@@ -199,10 +199,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         written = st.put_if_match(s3, path, body, tombstone.etag, metadata(ctx, KIND_UNARCHIVE))
     except PreconditionFailed:
         # Someone restored or re-archived it between our read and our write.
-        try:
-            now = st.get(s3, path)
-        except AccessDenied:
-            raise forbidden() from None
+        now = st.get(s3, path, absent_on_denied=True)
         if now is None:
             raise not_found() from None
         raise _changed(now) from None

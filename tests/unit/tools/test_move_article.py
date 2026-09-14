@@ -383,8 +383,11 @@ def test_grants_used_on_both_ends_are_audited(
     assert ("/public", "write") in mover.audit.grants_used
 
 
-def test_s3_access_denied_is_403(denied_ctx: ToolContext) -> None:
-    expect_error(TOOL, denied_ctx, 403, "forbidden", **{"from": FROM, "to": TO, "if_version": "v"})
+def test_s3_access_denied_on_the_reads_is_404(denied_ctx: ToolContext) -> None:
+    """403 on the destination head is "empty" and 403 on the source get is "absent":
+    both are what real S3 answers for a missing key under the WRITE credential for
+    that key (§8.5). The put paths still map a 403 to ``forbidden`` (next test)."""
+    expect_error(TOOL, denied_ctx, 404, "not_found", **{"from": FROM, "to": TO, "if_version": "v"})
 
 
 def test_s3_access_denied_on_pointer_write_is_403_with_nothing_written(

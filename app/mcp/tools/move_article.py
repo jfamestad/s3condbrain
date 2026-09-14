@@ -3,7 +3,11 @@
 Four S3 operations, **pointer first**:
 
 1. ``HeadObject to`` — anything there (article, pointer, tombstone) is ``409``.
-2. ``GetObject from`` — must be live content; ``if_version`` must match.
+   Under the WRITE credential for that one key, real S3 answers an *empty*
+   destination with 403 (no ``s3:ListBucket`` — §8.5); ``absent_on_denied`` reads
+   that as clear, which is the only thing it can mean.
+2. ``GetObject from`` — must be live content; ``if_version`` must match. Same
+   credential shape, same reading of a 403.
 3. The impact report is computed here, before any write, so a failure leaves
    nothing changed and a success reports exactly what it changed (§4.6).
 4. **The boundary decision.** A move through which anyone *gains* access is refused
@@ -249,13 +253,10 @@ def _source(st: ArticleStore, s3: Any, from_path: str, to_path: str) -> tuple[St
 
     Raises:
         ToolError: 404 when nothing live is there — including a pointer that names
-            some *other* destination, which is a retired path like any other; 403
-            when S3 refuses.
+            some *other* destination, which is a retired path like any other, and
+            S3's 403 for a missing key under the WRITE credential for it (§8.5).
     """
-    try:
-        current = st.get(s3, from_path)
-    except AccessDenied:
-        raise forbidden() from None
+    current = st.get(s3, from_path, absent_on_denied=True)
     if current is None:
         raise not_found()
     article = parse(current.body)
@@ -398,11 +399,9 @@ def perform(
     st = store(ctx)
 
     # 1. The destination must be empty — a pointer or tombstone there is occupied too.
+    #    An empty key answers 403 under this credential (§8.5); that is "empty".
     s3_to = ctx.minter.s3(ctx.subject, Shape.WRITE, to_path)
-    try:
-        occupant = st.head(s3_to, to_path)
-    except AccessDenied:
-        raise forbidden() from None
+    occupant = st.head(s3_to, to_path, absent_on_denied=True)
     if occupant is not None:
         raise _destination_occupied()
 

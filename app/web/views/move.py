@@ -39,7 +39,7 @@ from app.mcp.tools._common import (
     reject_reserved_name,
 )
 from app.mcp.tools.move_article import access_changes, perform
-from app.storage.articles import AccessDenied, StoredObject
+from app.storage.articles import StoredObject
 from app.storage.markdown import parse
 from app.web.app import page, view
 from app.web.context import WebContext
@@ -123,13 +123,11 @@ def _source(ctx: WebContext, from_path: str, to_path: str) -> tuple[StoredObject
 
     Raises:
         HttpError: 404 when nothing live is there — absence, an archive tombstone,
-            a pointer elsewhere, or S3 refusing, all alike (§10.1).
+            a pointer elsewhere, all alike (§10.1). S3's 403 for a missing key under
+            the READ credential for it is absence too (§8.5).
     """
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, from_path)
-    try:
-        current = ctx.store.get(s3, from_path)
-    except AccessDenied:
-        raise HttpError(404, NO_SUCH_SOURCE) from None
+    current = ctx.store.get(s3, from_path, absent_on_denied=True)
     if current is None:
         raise HttpError(404, NO_SUCH_SOURCE)
     article = parse(current.body)
@@ -144,16 +142,14 @@ def _source(ctx: WebContext, from_path: str, to_path: str) -> tuple[StoredObject
 
 def _destination_clear(ctx: WebContext, to_path: str) -> None:
     """Say so at preview time rather than at confirm. The tool re-checks under its
-    own WRITE credential; this head is a courtesy under READ.
+    own WRITE credential; this head is a courtesy under READ, and an empty key
+    answers it with 403 in production (§8.5) — which is "clear".
 
     Raises:
         HttpError: 409 when anything occupies the destination.
     """
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, to_path)
-    try:
-        occupant = ctx.store.head(s3, to_path)
-    except AccessDenied:
-        occupant = None  # the confirm will say so under the credential that matters
+    occupant = ctx.store.head(s3, to_path, absent_on_denied=True)
     if occupant is not None:
         raise HttpError(409, OCCUPIED)
 

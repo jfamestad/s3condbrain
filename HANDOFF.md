@@ -581,6 +581,8 @@ Four keys, one round trip, bounded by **depth** rather than by tree size.
 | `list` | `read` + `s3:ListBucket` on the bucket ARN **with an `s3:prefix` condition** on the folder | `list_folder`, `search` over folder grants, listing rebuilds |
 | `write` | `read` + `s3:PutObject`, `kms:GenerateDataKey` on the same resource | every mutating tool; move mints one for each end |
 
+Real S3 answers a `HeadObject`/`GetObject` on a missing key with 403 unless the caller holds `s3:ListBucket`; READ and WRITE deliberately do not. Under a credential minted for exactly one key that 403 can only mean *absent*, and `ArticleStore` treats it so when a tool says it may (`absent_on_denied`), logging each conversion so a genuine misconfiguration still surfaces.
+
 A read credential carries **no** `ListBucket`. `GetObject` does not need it, and an unconditioned `ListBucket` on the bucket ARN is a listing of the whole bucket — the failure is a disclosure, not an error, which is why the `s3:prefix` condition is written here rather than left to be discovered.
 
 Scoping to the **operation** rather than to the user's whole grant set matters twice over: it keeps the policy far inside the 2 KB inline limit no matter how many grants a person accumulates, and a defect in the data plane leaks one prefix rather than everything that user could theoretically reach.

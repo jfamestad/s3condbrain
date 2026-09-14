@@ -32,7 +32,7 @@ from app.mcp.tools._common import (
     store,
 )
 from app.mcp.tools.list_versions import ACTOR_UNKNOWN, VERSION_ID_MAX_LENGTH, VERSION_ID_SCHEMA
-from app.storage.articles import META_ACTOR, AccessDenied
+from app.storage.articles import META_ACTOR
 from app.storage.markdown import parse
 
 DESCRIPTION = (
@@ -118,10 +118,9 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise
 
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, path)
-    try:
-        stored = store(ctx).get_version(s3, path, version_id)
-    except AccessDenied:
-        raise not_found() from None
+    # A READ credential for exactly this key: S3's 403 on a missing key or version
+    # is absence (§8.5), and the caller sees 404 either way.
+    stored = store(ctx).get_version(s3, path, version_id, absent_on_denied=True)
     if stored is None:
         raise not_found("No such version at this path.")
 

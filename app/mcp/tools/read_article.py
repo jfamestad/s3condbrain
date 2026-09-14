@@ -10,6 +10,10 @@ are indistinguishable (§10.1, §12.8 item 5). §10.5's error line says ``403 wi
 read``; the zero-grant security test and §10.1 say a path you may not see looks like
 no path, and that is what ships. The pointer ``note`` still tells a caller who
 lands on a 404 after a move to ask an owner (§5.3).
+
+The 403 is also what real S3 answers for a *missing* key under a credential without
+``s3:ListBucket`` (§8.5), which a READ credential for one key is — so the read asks
+``ArticleStore`` to treat it as absence (``absent_on_denied``).
 """
 
 from __future__ import annotations
@@ -36,7 +40,6 @@ from app.mcp.tools._common import (
     store,
     trust_of,
 )
-from app.storage.articles import AccessDenied
 from app.storage.markdown import Article, parse
 
 DESCRIPTION = (
@@ -182,10 +185,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise
 
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, path)
-    try:
-        current = store(ctx).get(s3, path)
-    except AccessDenied:
-        raise not_found() from None
+    current = store(ctx).get(s3, path, absent_on_denied=True)
     if current is None:
         raise not_found()
 

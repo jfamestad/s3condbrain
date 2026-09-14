@@ -80,11 +80,12 @@ def _stale(current: StoredObject) -> ToolError:
 
 
 def _live(st: ArticleStore, s3: Any, path: str) -> StoredObject:
-    """The current object, or the §10.10 error for why it cannot be updated."""
-    try:
-        current = st.get(s3, path)
-    except AccessDenied:
-        raise forbidden() from None
+    """The current object, or the §10.10 error for why it cannot be updated.
+
+    ``s3`` is the WRITE credential for exactly this key, so S3's 403 on a missing
+    key (no ``s3:ListBucket`` — §8.5) is read as absence: 404, not 403.
+    """
+    current = st.get(s3, path, absent_on_denied=True)
     if current is None:
         raise not_found()
     if parse(current.body).type in RESERVED_TYPES:

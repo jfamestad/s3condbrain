@@ -294,8 +294,10 @@ def test_article_write_grant_suffices(
     assert result["seq"] == 2
 
 
-def test_s3_access_denied_is_403(denied_ctx: ToolContext) -> None:
-    expect_error(TOOL, denied_ctx, 403, "forbidden", path=PATH, content="x", if_version="v")
+def test_s3_access_denied_on_the_read_is_404(denied_ctx: ToolContext) -> None:
+    """Under the WRITE credential for exactly this key, a 403 on the ``GetObject`` is
+    what real S3 answers for a missing key (§8.5): absent, not forbidden."""
+    expect_error(TOOL, denied_ctx, 404, "not_found", path=PATH, content="x", if_version="v")
 
 
 def test_s3_access_denied_on_put_is_403(

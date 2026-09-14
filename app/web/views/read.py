@@ -381,15 +381,15 @@ def _folder_page(ctx: WebContext, folder: str) -> Response:
 def _fetch(ctx: WebContext, path: str) -> StoredObject:
     """Grant check → READ credential for exactly this key → ``GetObject``.
 
+    A 403 from S3 under that credential is what a missing key answers without
+    ``s3:ListBucket`` (§8.5), so the store reads it as absence.
+
     Raises:
-        HttpError: 404 when denied (grant table or S3) or absent.
+        HttpError: 404 when denied (grant table) or absent.
     """
     _require_read(ctx, path)
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, path)
-    try:
-        current = ctx.store.get(s3, path)
-    except AccessDenied:
-        raise _gone() from None
+    current = ctx.store.get(s3, path, absent_on_denied=True)
     if current is None:
         raise _gone()
     return current
@@ -828,10 +828,8 @@ def version(request: Request, ctx: WebContext) -> Response:
         raise _gone()
     _require_read(ctx, path)
     s3 = ctx.minter.s3(ctx.subject, Shape.READ, path)
-    try:
-        stored = ctx.store.get_version(s3, path, version_id)
-    except AccessDenied:
-        raise _gone() from None
+    # READ for exactly this key: a 403 on a missing key or version is absence (§8.5).
+    stored = ctx.store.get_version(s3, path, version_id, absent_on_denied=True)
     if stored is None:
         raise _gone()
     article = parse(stored.body)

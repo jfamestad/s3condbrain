@@ -7,6 +7,7 @@ because moto has no IAM to deny with.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -175,6 +176,49 @@ def test_denied_client_raises_access_denied(store: ArticleStore) -> None:
         store.put_if_match(denied, "/x.md", b"x", '"e"', META)
     with pytest.raises(AccessDenied):
         store.list_children(denied, "/racing")
+
+
+@pytest.mark.parametrize(
+    ("verb", "call"),
+    [
+        ("GetObject", lambda st, s3: st.get(s3, "/racing/x.md", absent_on_denied=True)),
+        ("HeadObject", lambda st, s3: st.head(s3, "/racing/x.md", absent_on_denied=True)),
+        (
+            "GetObjectVersion",
+            lambda st, s3: st.get_version(s3, "/racing/x.md", "v1", absent_on_denied=True),
+        ),
+    ],
+)
+def test_absent_on_denied_reads_403_as_none_and_warns(
+    store: ArticleStore, caplog: pytest.LogCaptureFixture, verb: str, call: Any
+) -> None:
+    """Real S3 answers a missing key with 403 when the caller lacks ``s3:ListBucket``
+    (§8.5); a caller holding a credential for exactly that key may ask for that to
+    read as absence. Each conversion is one WARNING naming the verb and the key —
+    and nothing else — so a genuine misconfiguration is still visible in the log."""
+    with caplog.at_level(logging.WARNING, logger="app.storage.articles"):
+        assert call(store, DenyingClient()) is None
+    records = [r for r in caplog.records if r.name == "app.storage.articles"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert verb in record.getMessage() and "a/racing/x.md" in record.getMessage()
+    assert record.key == "a/racing/x.md" and record.operation == verb  # type: ignore[attr-defined]
+
+
+def test_absent_on_denied_is_opt_in_and_leaves_404_alone(
+    bucket: Any, store: ArticleStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    denied = DenyingClient()
+    with pytest.raises(AccessDenied):
+        store.get(denied, "/x.md", absent_on_denied=False)
+    with pytest.raises(AccessDenied):
+        store.head(denied, "/x.md")
+    # A real 404 under the flag is still plain absence: nothing to warn about.
+    with caplog.at_level(logging.WARNING, logger="app.storage.articles"):
+        assert store.get(bucket, "/nope.md", absent_on_denied=True) is None
+        assert store.head(bucket, "/nope.md", absent_on_denied=True) is None
+    assert [r for r in caplog.records if r.name == "app.storage.articles"] == []
 
 
 def test_unrelated_client_error_propagates(store: ArticleStore) -> None:

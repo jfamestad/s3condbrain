@@ -94,14 +94,14 @@ def stale(current: StoredObject) -> ToolError:
 def live(st: ArticleStore, s3: Any, path: str) -> StoredObject:
     """The current content object at ``path``, or the error for why there is none.
 
+    ``s3`` must be the WRITE credential for exactly this key: S3's 403 on a missing
+    key (no ``s3:ListBucket`` — §8.5) is then absence, and reads as 404.
+
     Raises:
         ToolError: 404 when nothing is there or the top version is a pointer or a
-            tombstone; 403 when S3 refuses.
+            tombstone.
     """
-    try:
-        current = st.get(s3, path)
-    except AccessDenied:
-        raise forbidden() from None
+    current = st.get(s3, path, absent_on_denied=True)
     if current is None:
         raise not_found()
     if parse(current.body).type in RESERVED_TYPES:
