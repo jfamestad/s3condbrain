@@ -54,8 +54,8 @@ security: ## §12.8 checks against a deployed instance (WIKI_BASE_URL required)
 aws-tests: ## Negative STS/S3 tests that need real credentials (build step 3)
 	uv run pytest -m aws -o addopts=""
 
-grant-owner: ## Write the bootstrap `own /` grant: make grant-owner SUBJECT=user_xxx TABLE=...
-	uv run python scripts/grant_owner.py --subject $(SUBJECT) --table $(TABLE)
+grant-owner: ## Bootstrap the first owner (own /): make grant-owner SUBJECT=user_xxx TABLE=...
+	uv run python scripts/grant_owner.py --bootstrap --subject $(SUBJECT) --table $(TABLE)
 
 clean:
 	rm -rf $(BUILD) cdk.out .pytest_cache .ruff_cache .mypy_cache

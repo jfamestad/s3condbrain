@@ -25,6 +25,12 @@ Everything here watches or copies; nothing here serves a request.
   ``Errors`` ≥ 1 / 5 min; MCP ``Throttles`` ≥ 1 / 5 min; a metric filter on the MCP
   log group for ``listing_refresh_failed`` / ``listing_rebuilt_unpersisted`` with an
   alarm at ≥ 5 / 15 min.
+* **Break-glass role** (§8.8, §8.9) — ``wiki-<env>-break-glass``: the only principal
+  holding ``s3:DeleteObjectVersion`` and ``s3:BypassGovernanceRetention`` on the wiki
+  bucket. Trusted by this account's IAM (so an administrator's SSO session can switch
+  to it in the console), one-hour sessions, never attached to a function. An
+  EventBridge rule alerts on every ``AssumeRole`` of it; every delete it performs is
+  a write data event on the trail.
 * **AWS Backup** (§12.5) — a vault encrypted with the storage key, a plan taking a
   daily snapshot of the grant table kept ``cfg.backup_retention_days`` days. The
   bucket's backup is its own versioning plus Object Lock; the rate-limit table holds
@@ -36,7 +42,7 @@ Depends on ``StorageStack`` (bucket, key, table), ``ComputeStack`` (the two func
 and their log groups) and ``ApiStack`` (the REST API name). Nothing depends on this
 stack, so it can be added or torn down independently.
 
-Outputs: AlertsTopicArn, TrailArn, TrailLogBucketName, BackupVaultName.
+Outputs: AlertsTopicArn, TrailArn, TrailLogBucketName, BackupVaultName, BreakGlassRoleArn.
 """
 
 from __future__ import annotations
@@ -150,6 +156,8 @@ class OpsStack(cdk.Stack):
         self.trail = self._create_trail()
         self.bucket_guard = self._create_bucket_guard_rule()
         self.alarms = self._create_alarms()
+        self.break_glass_role = self._create_break_glass_role()
+        self.break_glass_watch = self._create_break_glass_rule()
         self.backup_vault = self._create_backup_vault()
         self.backup_plan = self._create_backup_plan()
 
@@ -157,6 +165,7 @@ class OpsStack(cdk.Stack):
         cdk.CfnOutput(self, "TrailArn", value=self.trail.trail_arn)
         cdk.CfnOutput(self, "TrailLogBucketName", value=self.trail_bucket.bucket_name)
         cdk.CfnOutput(self, "BackupVaultName", value=self.backup_vault.backup_vault_name)
+        cdk.CfnOutput(self, "BreakGlassRoleArn", value=self.break_glass_role.role_arn)
 
     # ---------------------------------------------------------------- alerts
 
@@ -371,6 +380,77 @@ class OpsStack(cdk.Stack):
                 period_note=f"sum >= {LISTING_FAILURE_THRESHOLD} over 15 min",
             ),
         }
+
+    # ----------------------------------------------------------- break glass
+
+    @property
+    def _break_glass_role_name(self) -> str:
+        return f"wiki-{self.cfg.name}-break-glass"
+
+    def _create_break_glass_role(self) -> iam.Role:
+        """Hard delete and Object Lock bypass, for a person in the console (§8.8).
+
+        Trusts the account's own IAM so that an administrator (SSO permission set or
+        IAM principal with ``sts:AssumeRole`` on this ARN) can switch to it; nothing
+        that runs code is ever granted that. Scoped to article keys and the one key.
+        The procedure is ``docs/RUNBOOK.md`` "Hard delete".
+        """
+        bucket = self.storage.bucket
+        policy = iam.PolicyDocument(
+            statements=[
+                iam.PolicyStatement(
+                    sid="HardDeleteArticleVersions",
+                    actions=[
+                        "s3:DeleteObjectVersion",
+                        "s3:BypassGovernanceRetention",
+                        "s3:GetObject",
+                        "s3:GetObjectVersion",
+                        "s3:GetObjectRetention",
+                        "s3:PutObjectRetention",
+                    ],
+                    resources=[bucket.arn_for_objects("a/*")],
+                ),
+                iam.PolicyStatement(
+                    sid="ListVersionsWithinArticles",
+                    actions=["s3:ListBucket", "s3:ListBucketVersions"],
+                    resources=[bucket.bucket_arn],
+                    conditions={"StringLike": {"s3:prefix": ["a/*"]}},
+                ),
+                iam.PolicyStatement(
+                    sid="KeyUse",
+                    actions=["kms:Decrypt", "kms:DescribeKey"],
+                    resources=[self.storage.key.key_arn],
+                ),
+            ]
+        )
+        return iam.Role(
+            self,
+            "BreakGlass",
+            role_name=self._break_glass_role_name,
+            assumed_by=iam.AccountRootPrincipal(),
+            max_session_duration=Duration.hours(1),
+            description="wiki break-glass: hard delete + Object Lock bypass, humans only (§8.8)",
+            inline_policies={"HardDelete": policy},
+        )
+
+    def _create_break_glass_rule(self) -> events.Rule:
+        rule = events.Rule(
+            self,
+            "BreakGlassUsed",
+            rule_name=f"wiki-{self.cfg.name}-break-glass-used",
+            description="Someone assumed the break-glass role (HANDOFF §8.8)",
+            event_pattern=events.EventPattern(
+                source=["aws.sts"],
+                detail_type=["AWS API Call via CloudTrail"],
+                detail={
+                    "eventSource": ["sts.amazonaws.com"],
+                    "eventName": ["AssumeRole"],
+                    "requestParameters": {"roleArn": [self.break_glass_role.role_arn]},
+                },
+            ),
+        )
+        rule.add_target(targets.SnsTopic(self.alerts))
+        return rule
 
     # ---------------------------------------------------------------- backup
 

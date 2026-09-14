@@ -1,0 +1,120 @@
+# CI — HANDOFF §12.4 "repository and build practices".
+#
+# Every push and pull request: lint, types, unit tests, Lambda packaging, a full
+# `cdk synth` of all four stacks (dev config, placeholder certificate — no AWS
+# credentials are needed because nothing in the dev config does a context lookup),
+# and a secret scan of the whole history with gitleaks.
+#
+# What this file cannot do:
+#
+#   * GitHub **push protection** and **secret scanning** are repository settings,
+#     not workflow steps. Enable both under Settings → Code security → "Secret
+#     scanning" and "Push protection" BEFORE the first push of real work:
+#     https://docs.github.com/en/code-security/secret-scanning/enabling-secret-scanning-features/enabling-push-protection-for-your-repository
+#     gitleaks below is the second net; push protection acts before a secret is public.
+#   * **Branch protection** on `main` with "require a pull request" and this
+#     workflow's `checks` job as a required status check is likewise a setting:
+#     Settings → Branches → Add rule.
+#   * **Allow auto-merge** (Settings → General → Pull Requests) must be on for the
+#     `dependabot-automerge` job below to have any effect.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # `npx cdk` installs aws-cdk on first use; never prompt in CI.
+  npm_config_yes: "true"
+  # The dev config sets cfg.domain without a hosted zone, so a certificate ARN must be
+  # supplied. Synth never calls ACM; any well-formed ARN will do.
+  SYNTH_CERT_ARN: arn:aws:acm:us-west-2:000000000000:certificate/placeholder
+
+jobs:
+  checks:
+    name: lint · types · tests · build · synth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Ruff (lint)
+        run: uv run ruff check app infra tests scripts
+
+      - name: Ruff (format)
+        run: uv run ruff format --check app infra tests scripts
+
+      - name: mypy
+        run: uv run mypy app
+
+      - name: Unit tests
+        run: uv run pytest
+
+      - name: Package the Lambda functions
+        run: make build
+
+      - name: cdk synth (dev, all stacks)
+        run: npx cdk synth -c env=dev -c certificateArn="$SYNTH_CERT_ARN" --quiet
+
+      - name: Scan the deployment package for credential-shaped files
+        # `make build` copies app/ into build/; a stray .env or key file would ride
+        # along. gitleaks (below) covers the history; this covers what ships.
+        run: |
+          set -euo pipefail
+          if find build -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'credentials' \) | grep .; then
+            echo "::error::credential-shaped file in the deployment package"; exit 1
+          fi
+          if grep -rIlE 'AKIA[0-9A-Z]{16}|sk_(live|test)_[0-9a-zA-Z]{20,}' build --include='*.py' --include='*.json' --include='*.toml' --include='*.txt'; then
+            echo "::error::credential-shaped string in the deployment package"; exit 1
+          fi
+
+  gitleaks:
+    name: secret scan (history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only needed for organisation-owned repositories; personal repos are free.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  dependabot-automerge:
+    # §12.4: auto-merge for patch and minor releases. Major updates wait for a person.
+    # Needs "Allow auto-merge" on the repo and branch protection requiring `checks`,
+    # so the merge actually waits for the tests above.
+    name: dependabot auto-merge (minor/patch)
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    needs: [checks, gitleaks]
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

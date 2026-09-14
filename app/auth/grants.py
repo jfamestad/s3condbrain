@@ -133,10 +133,15 @@ class GrantStore:
         anyway. Unprocessed keys are retried with exponential backoff.
         """
         pk = f"{_SUBJECT_PREFIX}{subject}"
-        keys = [{"pk": pk, "sk": node} for node in ancestors(path)]
+        # The PROFILE row shares the partition key, so it rides in the same batch:
+        # a disabled person resolves to nothing, on every request, for free (§12.9).
+        keys = [{"pk": pk, "sk": _PROFILE_SK}]
+        keys += [{"pk": pk, "sk": node} for node in ancestors(path)]
         items: list[dict[str, Any]] = []
         for start in range(0, len(keys), _BATCH_GET_LIMIT):
             items.extend(self._batch_get(keys[start : start + _BATCH_GET_LIMIT]))
+        if any(i.get("sk") == _PROFILE_SK and i.get("status") == "disabled" for i in items):
+            return []
         return [_grant_from_item(i) for i in items if _is_grant_row(i)]
 
     def _batch_get(self, keys: list[dict[str, str]]) -> list[dict[str, Any]]:

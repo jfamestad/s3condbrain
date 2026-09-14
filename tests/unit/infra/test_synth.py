@@ -608,3 +608,19 @@ def test_ratelimit_table_ttl_and_encryption(dev: Synth, prod: Synth) -> None:
         assert "PointInTimeRecoverySpecification" not in table
         assert resource["DeletionPolicy"] == deletion
     assert "RateLimitTableName" in dev.storage["Outputs"]
+
+
+def test_bucket_policy_denies_other_accounts(dev: Synth) -> None:
+    """§12.3: the bucket answers to nothing outside this account."""
+    [policy] = _resources(dev.storage, "AWS::S3::BucketPolicy").values()
+    denies = [
+        st
+        for st in policy["Properties"]["PolicyDocument"]["Statement"]
+        if st["Effect"] == "Deny" and st.get("Sid") == "DenyOtherAccounts"
+    ]
+    assert len(denies) == 1
+    [deny] = denies
+    assert deny["Principal"] == {"AWS": "*"}
+    assert deny["Action"] == "s3:*"
+    assert "StringNotEquals" in deny["Condition"]
+    assert "aws:PrincipalAccount" in deny["Condition"]["StringNotEquals"]

@@ -25,6 +25,7 @@ from __future__ import annotations
 import aws_cdk as cdk
 from aws_cdk import Duration, RemovalPolicy
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_kms as kms
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
@@ -88,7 +89,7 @@ class StorageStack(cdk.Stack):
             noncurrent_version_expiration=Duration.days(LISTING_NONCURRENT_EXPIRY_DAYS),
         )
 
-        return s3.Bucket(
+        bucket = s3.Bucket(
             self,
             "Bucket",
             versioned=True,
@@ -108,6 +109,21 @@ class StorageStack(cdk.Stack):
             removal_policy=self._removal,
             auto_delete_objects=not self.cfg.retain_data,
         )
+        # §12.3: the bucket answers to nothing outside this account. Public access
+        # blocking stops anonymous reads; this stops a principal in another account
+        # that a mistaken bucket policy or ACL might one day admit. Service principals
+        # (auto-delete custom resource, CloudTrail) are all in-account.
+        bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenyOtherAccounts",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["s3:*"],
+                resources=[bucket.bucket_arn, bucket.arn_for_objects("*")],
+                conditions={"StringNotEquals": {"aws:PrincipalAccount": self.account}},
+            )
+        )
+        return bucket
 
     def _create_table(self) -> dynamodb.Table:
         table = dynamodb.Table(

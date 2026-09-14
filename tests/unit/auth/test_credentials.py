@@ -19,10 +19,12 @@ from app.auth.credentials import (
     CredentialMinter,
     Shape,
     list_prefix,
+    listing_key,
     s3_key,
     s3_resource,
     session_policy,
 )
+from app.config import MAX_PATH_LENGTH
 
 # Snapshot of the process environment before conftest's autouse fixture replaces the
 # AWS variables with fakes. The ``aws``-marked tests restore these so they run against
@@ -153,13 +155,23 @@ class TestReadShape:
         """§8.5: an unconditioned ListBucket is a disclosure, so READ must not carry it."""
         pol = session_policy(Shape.READ, BUCKET, KMS, "/racing")
         assert "s3:ListBucket" not in _actions(pol)
-        assert "ListBucket" not in _compact(pol)
         assert "s3:List*" not in _actions(pol)
         assert "s3:*" not in _actions(pol)
+        # ListBucketVersions is allowed (history, §8.3) but only pinned to this path.
+        [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
+        assert versions["Action"] == ["s3:ListBucketVersions"]
+        assert versions["Condition"] == {"StringLike": {"s3:prefix": ["a/racing/*"]}}
 
     def test_no_write_actions(self) -> None:
         pol = session_policy(Shape.READ, BUCKET, KMS, "/racing/x.md")
-        assert _actions(pol) == {"s3:GetObject", "s3:GetObjectVersion", "kms:Decrypt"}
+        assert _actions(pol) == {
+            "s3:GetObject",
+            "s3:GetObjectVersion",
+            "s3:ListBucketVersions",
+            "kms:Decrypt",
+        }
+        [versions] = [st for st in _statements(pol) if "s3:ListBucketVersions" in st["Action"]]
+        assert versions["Condition"] == {"StringLike": {"s3:prefix": ["a/racing/x.md*"]}}
 
     def test_only_allow_statements_on_the_bucket_or_key(self) -> None:
         pol = session_policy(Shape.READ, BUCKET, KMS, "/racing/x.md")
@@ -167,6 +179,9 @@ class TestReadShape:
             assert st["Effect"] == "Allow"
             res = st["Resource"]
             for r in [res] if isinstance(res, str) else res:
+                if r == f"arn:aws:s3:::{BUCKET}":
+                    assert st["Action"] == ["s3:ListBucketVersions"] and "Condition" in st
+                    continue
                 assert r.startswith(f"arn:aws:s3:::{BUCKET}/a/") or r == KMS
 
 
@@ -225,6 +240,7 @@ class TestListShape:
             "s3:GetObjectVersion",
             "kms:Decrypt",
             "s3:ListBucket",
+            "s3:ListBucketVersions",
         }
 
 
@@ -246,6 +262,7 @@ class TestWriteShape:
         assert _actions(pol) == {
             "s3:GetObject",
             "s3:GetObjectVersion",
+            "s3:ListBucketVersions",
             "s3:PutObject",
             "kms:Decrypt",
             "kms:GenerateDataKey",
@@ -253,7 +270,7 @@ class TestWriteShape:
 
     def test_no_list_bucket(self) -> None:
         pol = session_policy(Shape.WRITE, BUCKET, KMS, "/racing/x.md")
-        assert "ListBucket" not in _compact(pol)
+        assert "s3:ListBucket" not in _actions(pol)
 
     def test_never_delete(self) -> None:
         for shape in Shape:
@@ -280,15 +297,16 @@ class TestPolicyDocument:
             session_policy("delete", BUCKET, KMS, "/racing/x.md")  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("shape", [Shape.READ, Shape.WRITE])
-    def test_size_bound_for_1000_char_article_path(self, shape: Shape) -> None:
-        path = "/" + "/".join(["d" * 20] * 46) + "/" + "x" * 30 + ".md"
-        assert len(path) == 1000
+    def test_size_bound_for_max_length_article_path(self, shape: Shape) -> None:
+        # §10.2 caps paths at MAX_PATH_LENGTH so every shape fits STS's 2 KB inline limit.
+        path = "/" + "/".join(["d" * 20] * 23) + "/" + "x" * 25 + ".md"
+        assert len(path) == MAX_PATH_LENGTH
         assert len(_compact(session_policy(shape, BUCKET, KMS, path))) < 2048
 
     @pytest.mark.parametrize("shape", [Shape.READ, Shape.WRITE])
-    def test_size_bound_for_1000_char_folder_path(self, shape: Shape) -> None:
-        path = "/" + "/".join(["d" * 20] * 47) + "/" + "x" * 12
-        assert len(path) == 1000
+    def test_size_bound_for_max_length_folder_path(self, shape: Shape) -> None:
+        path = "/" + "/".join(["d" * 20] * 24) + "/" + "x" * 7
+        assert len(path) == MAX_PATH_LENGTH
         assert len(_compact(session_policy(shape, BUCKET, KMS, path))) < 2048
 
     def test_list_size_bound_for_1000_char_article_path(self) -> None:
@@ -586,3 +604,91 @@ class TestAgainstAws:
         with pytest.raises(ClientError) as exc:
             s3.put_object(Bucket=real_env["WIKI_BUCKET"], Key="a/racing/probe.md", Body=b"x")
         assert _error_code(exc.value) == "AccessDenied"
+
+
+# --- the MAINTAIN shape (increment A, §8.6 / §8.9) ----------------------------------------
+
+
+class TestMaintainShape:
+    """WRITE + LIST over the folder, plus ``s3:PutObjectTagging`` on that folder's
+    ``_listing.json`` key only — a tagged ``PutObject`` needs the tagging permission."""
+
+    def test_exact_action_set(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        assert _actions(pol) == {
+            "s3:GetObject",
+            "s3:GetObjectVersion",
+            "s3:PutObject",
+            "kms:Decrypt",
+            "kms:GenerateDataKey",
+            "s3:ListBucket",
+            "s3:ListBucketVersions",
+            "s3:PutObjectTagging",
+        }
+
+    def test_object_statement_is_the_folder_prefix(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        st = _by_action(pol, "s3:PutObject")
+        assert st["Resource"] == f"arn:aws:s3:::{BUCKET}/a/racing/*"
+        assert set(st["Action"]) == {"s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"}
+
+    def test_list_bucket_carries_the_prefix_condition(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        st = _by_action(pol, "s3:ListBucket")
+        assert st["Resource"] == f"arn:aws:s3:::{BUCKET}"
+        assert st["Condition"] == {"StringLike": {"s3:prefix": ["a/racing/*"]}}
+
+    def test_tagging_is_on_the_listing_key_only(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        st = _by_action(pol, "s3:PutObjectTagging")
+        assert st["Action"] == ["s3:PutObjectTagging"]
+        assert st["Resource"] == f"arn:aws:s3:::{BUCKET}/a/racing/_listing.json"
+        assert "*" not in st["Resource"]
+
+    def test_root(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/")
+        assert _by_action(pol, "s3:PutObject")["Resource"] == f"arn:aws:s3:::{BUCKET}/a/*"
+        assert _by_action(pol, "s3:ListBucket")["Condition"]["StringLike"] == {"s3:prefix": ["a/*"]}
+        assert (
+            _by_action(pol, "s3:PutObjectTagging")["Resource"]
+            == f"arn:aws:s3:::{BUCKET}/a/_listing.json"
+        )
+
+    def test_article_path_means_its_parent_folder(self) -> None:
+        assert session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing/x.md") == session_policy(
+            Shape.MAINTAIN, BUCKET, KMS, "/racing"
+        )
+        assert session_policy(Shape.MAINTAIN, BUCKET, KMS, "/x.md") == session_policy(
+            Shape.MAINTAIN, BUCKET, KMS, "/"
+        )
+
+    def test_no_tagging_in_the_other_shapes(self) -> None:
+        for shape in (Shape.READ, Shape.LIST, Shape.WRITE):
+            assert "Tagging" not in _compact(session_policy(shape, BUCKET, KMS, "/racing"))
+
+    def test_kms_generate_data_key(self) -> None:
+        pol = session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        st = _by_action(pol, "kms:GenerateDataKey")
+        assert set(st["Action"]) == {"kms:Decrypt", "kms:GenerateDataKey"}
+        assert st["Resource"] == KMS
+
+    def test_listing_key_helper(self) -> None:
+        assert listing_key("/") == "a/_listing.json"
+        assert listing_key("/racing") == "a/racing/_listing.json"
+        assert listing_key("/racing/setup/rear-bar.md") == "a/racing/setup/_listing.json"
+
+    def test_size_bound_for_long_folder_path(self) -> None:
+        # MAINTAIN names the folder three times (object resource, prefix condition,
+        # listing key), so it fits less depth than LIST. Pin what it does support:
+        # far beyond any folder a person would create.
+        path = "/" + "/".join(["d" * 20] * 21) + "/" + "x" * 8
+        assert len(path) == 450
+        assert len(_compact(session_policy(Shape.MAINTAIN, BUCKET, KMS, path))) < 2048
+
+    def test_minter_uses_the_shape(self, minter: CredentialMinter, sts: FakeSts) -> None:
+        minter.mint("user_01", Shape.MAINTAIN, "/racing")
+        pol = json.loads(sts.calls[0]["Policy"])
+        assert pol == session_policy(Shape.MAINTAIN, BUCKET, KMS, "/racing")
+        assert "s3:PutObjectTagging" in _actions(pol)
+        minter.mint("user_01", Shape.WRITE, "/racing")
+        assert minter.mint_count == 2  # a different shape is a different credential

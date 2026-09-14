@@ -148,12 +148,26 @@ def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> di
         # StringLike ``a/racing/*`` matches ``a/racing/`` itself (``*`` may be empty), so
         # delimiter listings of the folder pass, and nothing shorter or elsewhere does.
         # A request with no Prefix has no ``s3:prefix`` key and fails the condition.
+        # ``ListBucketVersions`` rides along: history of anything under the folder.
         statements.append(
             {
                 "Effect": "Allow",
-                "Action": list(_LIST_ACTIONS),
+                "Action": [*_LIST_ACTIONS, "s3:ListBucketVersions"],
                 "Resource": f"arn:aws:s3:::{bucket}",
                 "Condition": {"StringLike": {"s3:prefix": [f"{list_prefix(path)}*"]}},
+            }
+        )
+    else:
+        # READ and WRITE: version history of exactly this key (§8.3 ``ListObjectVersions``
+        # needs ``s3:ListBucketVersions`` on the bucket). The prefix condition pins the
+        # request to this key; longer keys sharing the prefix are filtered by the caller.
+        versions_prefix = s3_key(path) if _is_article(_normalise(path)) else list_prefix(path)
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": ["s3:ListBucketVersions"],
+                "Resource": f"arn:aws:s3:::{bucket}",
+                "Condition": {"StringLike": {"s3:prefix": [f"{versions_prefix}*"]}},
             }
         )
     if shape is Shape.MAINTAIN:

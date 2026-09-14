@@ -187,9 +187,7 @@ class ListingChild:
         return not self.is_folder or self.visible_children > 0
 
     @classmethod
-    def article(
-        cls, name: str, etag: str, size: int, frontmatter: dict[str, Any]
-    ) -> ListingChild:
+    def article(cls, name: str, etag: str, size: int, frontmatter: dict[str, Any]) -> ListingChild:
         """Project an article's frontmatter. The caller has already checked ``type``."""
         tags = frontmatter.get("tags")
         return cls(
@@ -440,11 +438,13 @@ class ListingIndex:
     def rebuild(self, s3: Any, folder: str, *, persist: bool = True) -> Listing:
         """Authority: ``ListObjectsV2`` + one ranged ``GetObject`` per child article,
         filtering reserved types; child folders get their ``visible_children`` from
-        their own listing (read, or computed in memory if absent — a credential for
-        this folder cannot tag a descendant's listing, so descendants are never
-        written from here).
+        their own listing (read and verified against a live list; computed in memory
+        when absent or stale — a credential for this folder cannot tag a descendant's
+        listing, so descendants are never written from here).
 
-        Writes the result conditionally (``persist=True``) and returns it.
+        Writes the result conditionally (``persist=True``) and returns it. A folder
+        with nothing under it is never given a listing object: the result is returned
+        unpersisted so that asking about a path cannot create one.
 
         Raises:
             AccessDenied: on 403.
@@ -577,16 +577,19 @@ class ListingIndex:
 
     def _rebuild(self, s3: Any, folder: str, *, persist: bool, live: _Live | None) -> Listing:
         for _attempt in range(MAX_WRITE_ATTEMPTS):
-            current = self.read(s3, folder)
             if live is None:
                 live = self._list(s3, folder)
             fresh = self._compute(s3, folder, live)
             empty = not live.folders and not live.articles
             live = None  # a retry re-lists: something changed underneath us
-            if not persist or (current is None and empty):
-                # A LIST credential cannot put the listing; and a folder with nothing
-                # under it does not exist, so never leave a listing object behind for
-                # a path someone merely asked about.
+            if not persist:
+                # A LIST credential cannot put the listing.
+                self._info("listing_rebuilt_unpersisted", folder=folder)
+                return fresh
+            current = self.read(s3, folder)  # for the ETag the write is conditioned on
+            if current is None and empty:
+                # A folder with nothing under it does not exist: never leave a listing
+                # object behind for a path someone merely asked about.
                 self._info("listing_rebuilt_unpersisted", folder=folder)
                 return fresh
             try:
@@ -616,14 +619,13 @@ class ListingIndex:
                 continue
             children.append(ListingChild.article(name, etag, size, article.frontmatter))
         for name in live.folders:
-            child_folder = join(folder, name)
-            sub = self.read(s3, child_folder)
-            if sub is None:
-                sub = self._compute(s3, child_folder, None)
+            # The child's own listing, verified against its live contents and computed
+            # in memory when absent or stale — never written from here (a credential
+            # for this folder cannot tag a descendant's listing). Rebuilds are rare;
+            # one extra list per child folder buys an accurate visibility bit.
+            sub = self.read_or_rebuild(s3, join(folder, name), writable=False)
             children.append(ListingChild.folder(name, sub.visible_count))
-        return Listing(
-            folder=folder, children=children, generated_at=_now_iso(), excluded=excluded
-        )
+        return Listing(folder=folder, children=children, generated_at=_now_iso(), excluded=excluded)
 
     def _stale(self, listing: Listing, live: _Live) -> bool:
         known = {c.name: c.etag for c in listing.articles}

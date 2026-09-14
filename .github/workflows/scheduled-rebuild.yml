@@ -1,0 +1,122 @@
+# Scheduled rebuild — HANDOFF §12.3 / §12.4 "patching is automated, not intended".
+#
+# Weekly: re-resolve every dependency to its newest allowed version (`uv lock
+# --upgrade`), run the full CI checks against the result, and open a pull request.
+# Dependabot handles individual bumps between runs; this catches everything at once
+# on a fixed cadence whether or not anything changed, so a patched dependency reaches
+# `main` without anyone deciding to act.
+#
+# The pull request is opened with the workflow's GITHUB_TOKEN, and GitHub does not
+# run `ci.yml` for pushes made with that token — which is why the checks run here,
+# in the same job, before the PR is opened. The `dependabot-automerge` job in ci.yml
+# does not apply to this PR; merge it by hand (or grant a PAT to `token:` below and
+# add an auto-merge step).
+#
+# Deploy is NOT automatic yet. The handoff calls for "rebuild-and-deploy"; deploying
+# from Actions needs an IAM role the workflow can assume through GitHub's OIDC
+# provider, and that role does not exist. The job is written below, commented out,
+# with the role ARN as a placeholder — see docs/DEPLOY.md "Automating deploys".
+
+name: scheduled-rebuild
+
+on:
+  schedule:
+    # Mondays 14:00 UTC (06:00 US-Pacific). Actions may delay scheduled runs; that
+    # is fine for a weekly cadence.
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  npm_config_yes: "true"
+  SYNTH_CERT_ARN: arn:aws:acm:us-west-2:000000000000:certificate/placeholder
+
+jobs:
+  refresh:
+    name: uv lock --upgrade · checks · PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Re-resolve every dependency
+        run: uv lock --upgrade
+
+      - name: Install the new lock
+        run: uv sync --locked
+
+      # The same steps as ci.yml `checks`; keep them in step when editing either.
+      - name: Ruff (lint)
+        run: uv run ruff check app infra tests scripts
+      - name: Ruff (format)
+        run: uv run ruff format --check app infra tests scripts
+      - name: mypy
+        run: uv run mypy app
+      - name: Unit tests
+        run: uv run pytest
+      - name: Package the Lambda functions
+        run: make build
+      - name: cdk synth (dev, all stacks)
+        run: npx cdk synth -c env=dev -c certificateArn="$SYNTH_CERT_ARN" --quiet
+
+      - name: Open the refresh PR (no-op when the lock did not change)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          add-paths: uv.lock
+          commit-message: "chore: weekly dependency refresh"
+          title: "chore: weekly dependency refresh"
+          body: |
+            Weekly `uv lock --upgrade` (HANDOFF §12.4). Lint, types, unit tests,
+            `make build` and `cdk synth` passed on this lock in the scheduled run.
+
+            Merge it; the next `make deploy` carries the refreshed dependencies.
+          branch: chore/weekly-dependency-refresh
+          delete-branch: true
+          labels: dependencies
+
+  # ---------------------------------------------------------------------------
+  # Deploy after a green refresh — DISABLED until the OIDC role exists.
+  #
+  # Prerequisites (docs/DEPLOY.md "Automating deploys"):
+  #   1. An IAM OIDC identity provider for token.actions.githubusercontent.com in
+  #      the dev account.
+  #   2. A role trusting that provider, with `sub` pinned to
+  #      repo:<owner>/<repo>:ref:refs/heads/main, holding the CDK deploy permissions
+  #      (assume the cdk-hnb659fds-*-role-* bootstrap roles) and nothing else.
+  #   3. The certificate ARN as a repository variable (vars.DEV_CERT_ARN).
+  #
+  # deploy-dev:
+  #   name: deploy dev after refresh
+  #   needs: refresh
+  #   if: needs.refresh.result == 'success'
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     id-token: write
+  #     contents: read
+  #   env:
+  #     CERT_ARN: ${{ vars.DEV_CERT_ARN }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: astral-sh/setup-uv@v5
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: "22"
+  #     - uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         role-to-assume: arn:aws:iam::000000000000:role/wiki-dev-github-deploy   # PLACEHOLDER
+  #         aws-region: us-west-2
+  #     - run: uv sync --locked
+  #     - run: make deploy ENV=dev CERT_ARN="$CERT_ARN"

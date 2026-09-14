@@ -1,0 +1,35 @@
+# Dependabot — HANDOFF §12.4: pinned versions, automated update PRs, auto-merge for
+# patch and minor (the auto-merge itself is the `dependabot-automerge` job in
+# .github/workflows/ci.yml and needs "Allow auto-merge" on in repository settings).
+#
+# Python dependencies are resolved by uv (`uv.lock`), so the ecosystem is `uv`, not
+# `pip`. Major updates arrive as their own PRs and wait for a person.
+
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 10
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Los_Angeles"
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]

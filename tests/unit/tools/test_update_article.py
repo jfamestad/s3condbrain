@@ -56,7 +56,10 @@ def test_happy_path_bumps_seq_and_records_actor(
     assert stored.body == "v2 body\n"
     assert stored.frontmatter == {**FM, "seq": 2}
     # The write, then the parent listing refresh (§8.6); no ancestor flipped visibility.
-    assert minter.calls[-2:] == [(OWNER, Shape.WRITE, PATH), (OWNER, Shape.MAINTAIN, "/racing/setup")]
+    assert minter.calls[-2:] == [
+        (OWNER, Shape.WRITE, PATH),
+        (OWNER, Shape.MAINTAIN, "/racing/setup"),
+    ]
 
 
 def test_repeated_updates_chain(ctx: ToolContext, existing: dict[str, Any]) -> None:

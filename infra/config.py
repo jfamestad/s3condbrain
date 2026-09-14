@@ -40,6 +40,7 @@ class EnvConfig:
     retain_data: bool
     allowed_origins: tuple[str, ...] = ("https://claude.ai",)
     credential_cache_seconds: int = 900
+    workos_web_client_id: str = ""  # the web app's own AuthKit client (increment F)
     log_retention_days: int = 90
     backup_retention_days: int = 35
 

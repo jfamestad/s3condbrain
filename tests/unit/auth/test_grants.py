@@ -7,6 +7,7 @@ nothing, whatever else is in the table.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import boto3
 import pytest
@@ -297,3 +298,28 @@ class TestGrantStore:
         # No injected resource: the store builds boto3.resource("dynamodb") itself.
         s = GrantStore(settings.grant_table)
         assert s is not None
+
+
+class TestDisabledProfile:
+    """§12.9: disabling a person takes effect on their next request, with no extra
+    round trip — the PROFILE row rides in the ancestor batch."""
+
+    def test_disabled_profile_resolves_to_nothing(self, grant_table: Any, settings: Any) -> None:
+        store = GrantStore(settings.grant_table)
+        store.put_grant(Grant("user_d", "/", Permission.OWN))
+        grant_table.put_item(
+            Item={"pk": "U#user_d", "sk": "PROFILE", "email": "d@x", "status": "disabled"}
+        )
+        assert store.resolve("user_d", "/racing/x.md").permission is None
+        with pytest.raises(ToolError) as e:
+            store.require("user_d", "/", Permission.READ)
+        assert e.value.status == 403
+
+    def test_active_and_missing_profiles_keep_grants(self, grant_table: Any, settings: Any) -> None:
+        store = GrantStore(settings.grant_table)
+        store.put_grant(Grant("user_a", "/", Permission.OWN))
+        assert store.resolve("user_a", "/x.md").permission is Permission.OWN  # no profile row
+        grant_table.put_item(
+            Item={"pk": "U#user_a", "sk": "PROFILE", "email": "a@x", "status": "active"}
+        )
+        assert store.resolve("user_a", "/x.md").permission is Permission.OWN
