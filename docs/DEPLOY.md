@@ -34,13 +34,17 @@ failure this list is for.
       `workos_web_client_id` in `infra/config.py` for this env ([§3](#3-infraconfigpy);
       the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 7). An
       empty client id is a synth warning in dev and a synth **error** in prod.
-- [ ] **Certificate, by hand (never CI):** `make cert-deploy ENV=<env>`; it pauses at "waiting for validation" — run `make cert-status ENV=<env>` in another shell, add the CNAME it prints at your DNS provider, and the deploy completes when ACM sees it (minutes to an hour). The ARN lands in SSM at `/wiki/<env>/certificate-arn`; the API stack reads it, so `CERT_ARN=` is no longer needed. Renewals are automatic while the CNAME stays. (Section [Certificate](#certificate).)
-      certificate exists in `us-west-2` for the exact hostname and its ARN is at hand
-      as `CERT_ARN` ([§2](#2-domain-and-certificate)).
-- [ ] **5. `make synth ENV=<env> CERT_ARN=...`** succeeds, and the
+- [ ] **4. Certificate, by hand (never CI).** `make cert-deploy ENV=<env>`; it pauses
+      at "waiting for validation" — run `make cert-status ENV=<env>` in another shell,
+      add the CNAME it prints at your DNS provider, and the deploy completes when ACM
+      sees it (minutes to an hour). The ARN lands in SSM at
+      `/wiki/<env>/certificate-arn` and the API stack reads it at deploy time, so
+      `CERT_ARN=` is not needed. Renewals are automatic while the CNAME stays
+      ([Certificate](#certificate)).
+- [ ] **5. `make synth ENV=<env>`** succeeds, and the
       `wiki: env=<env> account=<id> region=us-west-2` line it prints shows the account
       from step 1 ([§4](#4-deploy)).
-- [ ] **6. `make deploy ENV=<env> CERT_ARN=...`**, with `-c alertEmail=` for prod;
+- [ ] **6. `make deploy ENV=<env>`**, with `-c alertEmail=` for prod;
       confirm the SNS subscription from the email ([§4](#4-deploy)).
 - [ ] **7. DNS.** CNAME or ALIAS from the hostname to the api stack's `DomainTarget`;
       the metadata URL answers ([§2](#2-domain-and-certificate), [§4](#4-deploy)).
@@ -119,10 +123,10 @@ Pick one of the two routes `infra/stacks/api.py` supports:
 - **Hosted zone in this account** — set `hosted_zone_name` in `infra/config.py`. CDK
   issues a DNS-validated certificate and writes the alias record itself. Nothing else
   to do.
-- **DNS lives elsewhere** (the current dev config) — request a certificate in ACM,
-  `us-west-2`, for the exact hostname (`wiki-dev.famestad.com`), validate it by
-  CNAME at your DNS provider, and pass its ARN as `CERT_ARN` to every `make deploy`.
-  After the first deploy, create a CNAME (or ALIAS) from the hostname to the
+- **DNS lives elsewhere** (the current dev config) — issue the certificate with the
+  hand-deployed certificate stack: see [Certificate](#certificate). Its ARN reaches
+  the API stack through SSM; `CERT_ARN=` is only for a certificate issued some other
+  way. After the first deploy, create a CNAME (or ALIAS) from the hostname to the
   `DomainTarget` output of the api stack.
 
 ## 3. `infra/config.py`

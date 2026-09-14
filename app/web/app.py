@@ -133,9 +133,11 @@ def current_principal(request: Request) -> sess.Principal | None:
     # The same read enforces "Sign out everywhere" (§11.6): a cookie issued under an
     # older session_epoch than the profile's is a logged-out cookie.
     profile = build_context(request, None).admin.get_profile(principal.subject)
-    if profile is not None and profile.status == "disabled":
+    # Default deny (§3.3) holds per request, not only at login: no PROFILE row, a
+    # disabled one, or a cookie from before the last "sign out everywhere" — all refused.
+    if profile is None or profile.status == "disabled":
         return None
-    if profile is not None and principal.epoch != profile.session_epoch:
+    if principal.epoch != profile.session_epoch:
         return None
     return principal
 

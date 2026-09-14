@@ -172,22 +172,47 @@ def _tool_context(ctx: WebContext) -> ToolContext:
     )
 
 
-def _name(ctx: WebContext, change: dict[str, Any]) -> str:
-    """The report already carries ``display_name`` from the PROFILE row when there is
-    one; fall back to the profile's email, then the subject."""
+def _administered(ctx: WebContext) -> set[str]:
+    """Subjects holding a grant under one of the viewer's owned roots (§11.6 scope)."""
+    roots = ctx.admin.owned_roots(ctx.subject)
+    if not roots:
+        return set()
+    within = lambda node: any(node == r or r == "/" or node.startswith(r + "/") for r in roots)  # noqa: E731
+    return {
+        p.subject
+        for p in ctx.admin.list_profiles()
+        if any(within(g.node) for g in ctx.admin.grants_of(p.subject))
+    }
+
+
+def _name(ctx: WebContext, change: dict[str, Any], administered: set[str]) -> str:
+    """Who this change is about — by name only when the viewer administers them.
+
+    The impact report walks every grant on both paths (§4.6), which can reach people
+    outside the viewer's subtree — a reader of the source via an ancestor the viewer
+    does not own. Their access change is real and is shown; their name is not (§11.6:
+    the console shows a viewer only what they administer). The ``via`` node says
+    where the access comes from, which is enough to act on.
+    """
+    subject = change.get("subject", "")
+    if subject == ctx.subject:
+        return "You"
+    if subject not in administered:
+        return "Someone outside the areas you administer"
     name = change.get("display_name")
     if isinstance(name, str) and name:
         return name
-    profile = ctx.admin.get_profile(change["subject"])
+    profile = ctx.admin.get_profile(subject)
     if profile is not None and (profile.display_name or profile.email):
         return profile.display_name or profile.email
-    return str(change["subject"])
+    return subject
 
 
 def _rows(ctx: WebContext, changes: list[dict[str, Any]]) -> list[ChangeRow]:
     rows: list[ChangeRow] = []
+    administered = _administered(ctx)
     for change in changes:
-        text = f"{_name(ctx, change)} {change['direction']} {change['permission']}"
+        text = f"{_name(ctx, change, administered)} {change['direction']} {change['permission']}"
         if change.get("via"):
             text += f" (via {change['via']})"
         rows.append(ChangeRow(text, change["direction"]))

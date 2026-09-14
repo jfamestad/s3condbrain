@@ -498,3 +498,11 @@ def test_render_disables_html_and_rewrites_internal_links() -> None:
 def test_sections_ignore_headings_inside_code_fences() -> None:
     md = "# Real\n\n```\n# not a heading\n```\n\n~~~\n## nor this\n~~~\n\n## Also real\n"
     assert sections(md) == [(1, "Real"), (2, "Also real")]
+
+
+def test_cookie_without_profile_row_is_not_logged_in(session_cookie: str, admin: Any) -> None:
+    """Default deny per request (§3.3): a valid cookie whose PROFILE row is gone is a
+    logged-out cookie, exactly like a disabled one."""
+    admin.table.delete_item(Key={"pk": f"U#{SUBJECT}", "sk": "PROFILE"})
+    out = call(event("GET", "/app/", cookies={sess.SESSION_COOKIE: session_cookie}))
+    assert out["statusCode"] == 303 and "/app/login" in out["headers"]["Location"]

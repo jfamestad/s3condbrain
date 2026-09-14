@@ -24,8 +24,10 @@ Throttle (§12.6): 20 rps steady, 50 burst on the stage. Monthly cost budget of 
 an email subscriber is attached when context ``alertEmail`` is given.
 
 Custom domain (§9.5) when ``cfg.domain``: ACM cert (DNS-validated in the hosted zone
-if given, else imported from context ``certificateArn`` — an error annotation when
-absent), regional base path mapping ``(none)``, alias record when a zone is given.
+if given; otherwise the ARN the hand-deployed certificate stack published to SSM at
+``/wiki/<env>/certificate-arn``, resolved at deploy time, with context
+``certificateArn`` as an override), regional base path mapping ``(none)``, alias
+record when a zone is given.
 Without a domain the stage URL is output and CANONICAL_MCP_URL must be provided.
 
 Protected resource metadata body (AS-2):

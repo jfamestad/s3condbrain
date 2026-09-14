@@ -1431,6 +1431,8 @@ Since non-technical people must be able to operate this, **the admin console is 
 
 **Signing out everywhere (decided 14 Sep 2026).** Each PROFILE row carries a `session_epoch`; a session cookie records the epoch it was issued under, and the per-request PROFILE read (already made for the disabled check) rejects a mismatch. "Sign out everywhere" bumps the epoch. A copied cookie dies the moment its owner asks, not at the 12-hour expiry.
 
+**The move preview names only people the mover administers (decided 14 Sep 2026).** The impact report reaches everyone with a grant on either path, including readers of the source via an ancestor the mover does not own. Their gain or loss is shown — that is §4.6's guarantee — but as "someone outside the areas you administer" with the `via` node, not by name (§11.6's scope rule).
+
 **Pending grant requests (§4.10) are deferred past v1.** Granting stays human-only either way; the agent-proposal path can arrive later without touching the tool surface's security posture.
 
 ---

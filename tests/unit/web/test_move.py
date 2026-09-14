@@ -397,3 +397,26 @@ def test_malformed_paths_are_400_and_write_nothing(
     assert preview(cookie, from_path, to_path)["statusCode"] == 400
     assert confirm(cookie, article, from_path, to_path)["statusCode"] == 400
     assert_untouched(top, article, bucket, settings)
+
+
+def test_preview_names_only_people_the_mover_administers(
+    profile: Any,
+    admin: GrantAdmin,
+    grant: Callable[..., None],
+    put_raw: Callable[..., str],
+    cookie: str,
+) -> None:
+    """§11.6 scope inside §4.6's report: the viewer owns /team and merely writes
+    /family/private (delegated). Dana reads /family/private via a grant the viewer does
+    not administer. Moving the article out to /team takes Dana's access away — that
+    change is shown — but Dana is not named."""
+    grant("/team", "own")
+    grant("/family/private", "write")
+    admin.create_profile(DANA, "dana@example.com", "Dana", "active")
+    grant("/family/private", "read", DANA)
+    put_raw(FROM, FM, BODY)
+    out = preview(cookie, FROM, "/team/notes.md")
+    assert out["statusCode"] == 200, out["body"][:300]
+    body = out["body"]
+    assert "Someone outside the areas you administer loses read (via /family/private)" in body
+    assert "Dana" not in body and "dana@example.com" not in body and DANA not in body

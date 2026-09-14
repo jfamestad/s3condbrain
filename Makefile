@@ -57,10 +57,16 @@ cert-deploy: ## Issue the ACM certificate for ENV by hand; then add the CNAME it
 	$(CDK) $(CERT_APP) deploy -c env=$(ENV) --require-approval never
 
 cert-status: ## Show the certificate's validation CNAME and status for ENV
-	@arn=$$(aws acm list-certificates --region $$(uv run python -c "from infra.config import load; print(load('$(ENV)').region)") \
-	  --query "CertificateSummaryList[?DomainName=='$$(uv run python -c "from infra.config import load; print(load('$(ENV)').domain)")'].CertificateArn | [0]" --output text); \
-	if [ -z "$$arn" ] || [ "$$arn" = "None" ]; then echo "no certificate requested yet for $(ENV); run make cert-deploy"; exit 1; fi; \
-	aws acm describe-certificate --certificate-arn "$$arn" \
+	@region=$$(uv run python -c "from infra.config import load; print(load('$(ENV)').region)"); \
+	domain=$$(uv run python -c "from infra.config import load; print(load('$(ENV)').domain)"); \
+	arns=$$(aws acm list-certificates --region $$region \
+	  --query "CertificateSummaryList[?DomainName=='$$domain'].CertificateArn" --output text); \
+	count=$$(echo $$arns | wc -w | tr -d ' '); \
+	if [ "$$count" = "0" ]; then echo "no certificate requested yet for $$domain in $$region; run make cert-deploy"; exit 1; fi; \
+	if [ "$$count" != "1" ]; then echo "$$count certificates exist for $$domain — the API uses the one in SSM /wiki/$(ENV)/certificate-arn:"; \
+	  aws ssm get-parameter --region $$region --name /wiki/$(ENV)/certificate-arn --query Parameter.Value --output text 2>/dev/null || echo "(parameter not published yet)"; \
+	  echo "all: $$arns"; exit 1; fi; \
+	aws acm describe-certificate --region $$region --certificate-arn "$$arns" \
 	  --query "Certificate.{Status:Status,Domain:DomainName,CNAME:DomainValidationOptions[0].ResourceRecord}" --output table
 
 security: ## §12.8 checks against a deployed instance (WIKI_BASE_URL required)
