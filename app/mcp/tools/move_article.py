@@ -58,6 +58,7 @@ from app.mcp.tools._common import (
     article_path,
     metadata,
     reject_reserved_name,
+    revalidate_stored,
     store,
     version_arg,
 )
@@ -72,7 +73,7 @@ from app.storage.articles import (
     StoredObject,
 )
 from app.storage.listings import ListingChild, basename
-from app.storage.markdown import Article, parse, serialize
+from app.storage.markdown import parse, serialize
 
 DESCRIPTION = (
     "Relocate an article, leaving a permanent forward pointer at the old path. Returns "
@@ -304,20 +305,22 @@ def _write_destination(
     s3: Any,
     from_path: str,
     to_path: str,
-    content: Article,
+    frontmatter: dict[str, Any],
+    content: str,
     seq: int,
 ) -> tuple[dict[str, Any], StoredObject]:
-    """Step 5. Returns the destination frontmatter and the written object.
+    """Step 6. Returns the destination frontmatter and the written object.
+
+    ``frontmatter`` is the source's block already re-validated and without
+    ``seq``; ``content`` its body.
 
     Raises:
         ToolError: 409 when the destination filled between step 1 and now, 403 when
             S3 refuses. Either way the pointer at ``from`` already stands, so the
             message says so — the move is half-complete and a retry finishes it.
     """
-    frontmatter = dict(content.frontmatter)
-    frontmatter["moved_from"] = from_path
-    frontmatter["seq"] = seq
-    body = serialize(frontmatter, content.body)
+    frontmatter = {**frontmatter, "moved_from": from_path, "seq": seq}
+    body = serialize(frontmatter, content)
     meta = metadata(ctx, KIND_MOVED_IN, **{META_MOVED_FROM: from_path})
     try:
         written = st.put_new(s3, to_path, body, meta)
@@ -380,7 +383,9 @@ def perform(
         ``history_note``.
 
     Raises:
-        ToolError: 400 bad input; 403 ``forbidden`` without ``write`` on either end or
+        ToolError: 400 bad input, or a stored source block outside the §10.2 limits
+            (message prefixed ``stored frontmatter:``); 403 ``forbidden`` without
+            ``write`` on either end or
             when storage refuses; 403 ``boundary_change`` when the move would give
             someone access and ``allow_widening`` is false; 404 no live source; 409
             stale ``if_version`` or occupied destination (nothing written); 500 when a
@@ -430,6 +435,11 @@ def perform(
         content = parse(beneath.body)
         seq = parse(current.body).seq
     else:
+        content = parse(current.body)
+    # The source's block travels unchanged, so it is re-checked against §10.2 here —
+    # before the pointer, so a refusal leaves nothing written.
+    carried = revalidate_stored(content.frontmatter)
+    if not resuming:
         # 4. The boundary decision (§4.6): giving someone access is not an agent action.
         gains = _widening(changes)
         if gains and not allow_widening:
@@ -443,11 +453,12 @@ def perform(
             )
             raise _refusal(gains, changes)
         # 5. Pointer first. A stale token fails here with nothing written anywhere.
-        content = parse(current.body)
         seq = _write_pointer(ctx, st, s3_from, current, to_path)
 
     # 6. Content lands at the destination only after the source has committed.
-    dest_frontmatter, written = _write_destination(ctx, st, s3_to, from_path, to_path, content, seq)
+    dest_frontmatter, written = _write_destination(
+        ctx, st, s3_to, from_path, to_path, carried, content.body, seq
+    )
 
     # 7. Listings: the child leaves one folder and joins another.
     refresh_parent(ctx, from_path, None)

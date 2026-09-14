@@ -32,6 +32,7 @@ from app.mcp.tools._common import (
     content_arg,
     metadata,
     require_grant,
+    revalidate_stored,
     serialize_article,
     store,
     validate_frontmatter,
@@ -111,7 +112,8 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise _stale(current)
 
     stored = parse(current.body)
-    frontmatter = replacement if replacement is not None else dict(stored.frontmatter)
+    # A kept block is re-checked against §10.2 exactly as a supplied one is.
+    frontmatter = replacement if replacement is not None else revalidate_stored(stored.frontmatter)
     frontmatter["seq"] = stored.seq + 1
     body = serialize_article(frontmatter, content)
     try:

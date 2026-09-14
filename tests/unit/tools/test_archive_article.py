@@ -263,3 +263,47 @@ def test_listing_failure_never_fails_the_archive(
     result = call(TOOL, ctx, path=PATH, if_version=existing["version"])
     assert result["archived"] is True
     assert parse(get_raw(PATH)).type == "archived"
+
+
+# --- carried-forward frontmatter is re-validated (§10.2) ----------------------------
+
+
+RICH = {
+    "type": "doc",
+    "title": "Rear bar",
+    "description": "Sway bar notes",
+    "tags": ["racing", "setup"],
+    "status": "draft",
+    "sources": [{"resource": "https://example.com/bar"}],
+    "custom": "kept",
+}
+
+
+def test_stored_frontmatter_over_limits_is_400_and_writes_nothing(
+    ctx: ToolContext,
+    put_raw: Callable[..., str],
+    head_raw: Callable[..., Any],
+    get_raw: Callable[..., Any],
+    listing_calls: list[ListingCall],
+) -> None:
+    """The live block is re-checked before it is retired: 200 tags is refused with
+    the field named, and no tombstone is written."""
+    version = put_raw(PATH, {**FM, "tags": ["t"] * 200, "seq": 1}, "v1 body\n")
+    before = head_raw(PATH)
+    error = expect_error(TOOL, ctx, 400, "bad_request", path=PATH, if_version=version)
+    assert error.message.startswith("stored frontmatter: ")
+    assert "tags" in error.message
+    assert head_raw(PATH)["VersionId"] == before["VersionId"]
+    assert parse(get_raw(PATH)).type == "doc"
+    assert listing_calls == []
+
+
+def test_stored_frontmatter_within_limits_is_carried_into_the_tombstone(
+    ctx: ToolContext, put_raw: Callable[..., str], get_raw: Callable[..., Any]
+) -> None:
+    version = put_raw(PATH, {**RICH, "seq": 1}, "v1 body\n")
+    result = call(TOOL, ctx, path=PATH, if_version=version)
+    assert result["seq"] == 2
+    stored = parse(get_raw(PATH))
+    assert stored.body == ""
+    assert stored.frontmatter == {**RICH, "type": "archived", ARCHIVED_FROM_SEQ: 1, "seq": 2}

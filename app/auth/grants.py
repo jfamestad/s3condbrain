@@ -247,18 +247,37 @@ class GrantStore:
         Returns:
             ``{subject: Resolution}`` for every subject whose effective permission
             on ``path`` is not ``None``. A subject with grants only elsewhere in the
-            tree does not appear.
+            tree does not appear, and neither does a disabled one (§12.9): their
+            grants outlive disablement but confer nothing, so a move-impact report
+            that named them would report a boundary nobody crosses.
         """
         by_subject: dict[str, list[Grant]] = {}
         for node in ancestors(path):
             for grant in self.grants_for_node(node):
                 by_subject.setdefault(grant.subject, []).append(grant)
+        disabled = self._disabled_among(list(by_subject))
         reaching: dict[str, Resolution] = {}
         for subject, grants in by_subject.items():
+            if subject in disabled:
+                continue
             resolution = effective(grants, path)
             if resolution.permission is not None:
                 reaching[subject] = resolution
         return reaching
+
+    def _disabled_among(self, subjects: list[str]) -> set[str]:
+        """The subjects among ``subjects`` whose PROFILE row says ``disabled``.
+
+        One BatchGetItem over the PROFILE keys, chunked to the API limit. A subject
+        with no PROFILE row is not disabled; an empty input makes no request.
+        """
+        keys = [{"pk": f"{_SUBJECT_PREFIX}{subject}", "sk": _PROFILE_SK} for subject in subjects]
+        disabled: set[str] = set()
+        for start in range(0, len(keys), _BATCH_GET_LIMIT):
+            for item in self._batch_get(keys[start : start + _BATCH_GET_LIMIT]):
+                if _is_disabled_profile(item):
+                    disabled.add(str(item["pk"]).removeprefix(_SUBJECT_PREFIX))
+        return disabled
 
     def put_grant(self, grant: Grant) -> None:
         """Write one grant row plus its GSI keys. Bootstrap and tests only."""

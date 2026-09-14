@@ -149,6 +149,18 @@ class TestSubjectsReaching:
         for resolution in store.subjects_reaching(ARTICLE).values():
             assert all(g.node.startswith("/") for g in resolution.grants_used)
 
+    def test_disabled_subject_does_not_reach(
+        self, store: GrantStore, seeded: dict[str, Grant]
+    ) -> None:
+        """§12.9: a disabled person's grants confer nothing, so they are absent here
+        too. An active PROFILE row and no PROFILE row at all both still reach."""
+        store.table.put_item(Item={"pk": f"U#{BOB}", "sk": "PROFILE", "status": "disabled"})
+        store.table.put_item(Item={"pk": f"U#{CARA}", "sk": "PROFILE", "status": "active"})
+        reaching = store.subjects_reaching(ARTICLE)
+        assert BOB not in reaching  # disabled, with grants on /racing and the article
+        assert reaching[CARA] == Resolution(Permission.READ, (seeded["cara_article"],))
+        assert reaching[ALICE] == Resolution(Permission.OWN, (seeded["alice_root"],))
+
     def test_invalid_path_raises(self, store: GrantStore) -> None:
         with pytest.raises(ValueError):
             store.subjects_reaching("racing/x.md")

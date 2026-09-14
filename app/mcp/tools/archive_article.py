@@ -32,6 +32,7 @@ from app.mcp.tools._common import (
     VERSION_SCHEMA,
     article_path,
     metadata,
+    revalidate_stored,
     store,
     version_arg,
 )
@@ -117,7 +118,8 @@ def live(st: ArticleStore, s3: Any, path: str) -> StoredObject:
 def _tombstone(current: StoredObject) -> tuple[dict[str, Any], bytes]:
     """Frontmatter and bytes of the tombstone that retires ``current``."""
     stored = parse(current.body)
-    frontmatter = dict(stored.frontmatter)
+    # The live block (type doc) is re-checked against §10.2 before it is retired.
+    frontmatter = revalidate_stored(stored.frontmatter)
     frontmatter["type"] = TYPE_ARCHIVED
     frontmatter[ARCHIVED_FROM_SEQ] = stored.seq
     frontmatter["seq"] = stored.seq + 1

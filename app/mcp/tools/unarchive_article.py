@@ -33,6 +33,7 @@ from app.mcp.tools._common import (
     VERSION_SCHEMA,
     article_path,
     metadata,
+    revalidate_stored,
     store,
     version_arg,
 )
@@ -192,7 +193,10 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         )
 
     restored = parse(content.body)
-    frontmatter = {k: v for k, v in restored.frontmatter.items() if k != ARCHIVED_FROM_SEQ}
+    # The restored block is re-checked against §10.2 before it goes back on top.
+    frontmatter = revalidate_stored(
+        {k: v for k, v in restored.frontmatter.items() if k != ARCHIVED_FROM_SEQ}
+    )
     frontmatter["seq"] = parse(tombstone.body).seq + 1
     body = serialize(frontmatter, restored.body)
     try:

@@ -845,3 +845,91 @@ class _Profileless:
     @property
     def table(self) -> Any:
         raise RuntimeError("table unavailable")
+
+
+# --- carried-forward frontmatter is re-validated (§10.2) ----------------------------
+
+
+RICH = {
+    "type": "doc",
+    "title": "Rear bar",
+    "description": "Sway bar notes",
+    "tags": ["racing", "setup"],
+    "status": "draft",
+    "sources": [{"resource": "https://example.com/bar"}],
+    "custom": "kept",
+}
+
+
+def test_stored_frontmatter_over_limits_is_400_and_writes_nothing(
+    ctx: ToolContext,
+    put_raw: Callable[..., str],
+    head_raw: Callable[..., Any],
+    get_raw: Callable[..., Any],
+    exists_raw: Callable[[str], bool],
+    listing_calls: list[ListingCall],
+) -> None:
+    """The source's block travels unchanged, so it is re-checked before the pointer
+    is written: 200 tags is refused with the field named, and neither the pointer
+    nor the destination exists afterwards."""
+    version = put_raw(FROM, {**FM, "tags": ["t"] * 200, "seq": 1}, BODY)
+    before = head_raw(FROM)
+    error = expect_error(
+        TOOL, ctx, 400, "bad_request", **{"from": FROM, "to": TO, "if_version": version}
+    )
+    assert error.message.startswith("stored frontmatter: ")
+    assert "tags" in error.message
+    assert head_raw(FROM)["VersionId"] == before["VersionId"]
+    assert parse(get_raw(FROM)).type == "doc"
+    assert not exists_raw(TO)
+    assert listing_calls == []
+
+
+def test_stored_frontmatter_within_limits_is_carried_to_the_destination(
+    ctx: ToolContext, put_raw: Callable[..., str], get_raw: Callable[..., Any]
+) -> None:
+    version = put_raw(FROM, {**RICH, "seq": 1}, BODY)
+    result = call(TOOL, ctx, **{"from": FROM, "to": TO, "if_version": version})
+    stored = parse(get_raw(TO))
+    assert stored.body == BODY
+    assert stored.frontmatter == {**RICH, "moved_from": FROM, "seq": result["seq"]}
+
+
+# --- disabled subjects do not count toward the boundary (§4.6, §12.9) ----------------
+
+
+DANA = "user_dana"
+
+
+def test_disabled_subject_gaining_access_is_not_a_boundary_change(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    get_raw: Callable[..., Any],
+) -> None:
+    """A disabled account resolves to nothing, so its grant on the destination
+    folder gives nobody access: the move proceeds and reports no change."""
+    seed_grant(DANA, "/public", Permission.READ)
+    ctx.grants.table.put_item(Item={"pk": f"U#{DANA}", "sk": "PROFILE", "status": "disabled"})
+    result = call(TOOL, ctx, **{"from": FROM, "to": TO, "if_version": existing["version"]})
+    assert result["access_changes"] == []
+    assert parse(get_raw(TO)).body == BODY
+
+
+def test_active_subject_gaining_access_is_a_boundary_change(
+    ctx: ToolContext,
+    existing: dict[str, Any],
+    seed_grant: Callable[..., None],
+    exists_raw: Callable[[str], bool],
+) -> None:
+    seed_grant(DANA, "/public", Permission.READ)
+    ctx.grants.table.put_item(Item={"pk": f"U#{DANA}", "sk": "PROFILE", "status": "active"})
+    error = expect_error(
+        TOOL,
+        ctx,
+        403,
+        "boundary_change",
+        **{"from": FROM, "to": TO, "if_version": existing["version"]},
+    )
+    assert [c["subject"] for c in error.extra["access_changes"]] == [DANA]
+    assert not exists_raw(TO)

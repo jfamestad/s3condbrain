@@ -375,3 +375,46 @@ def test_replacement_frontmatter_over_limits_is_400(
         frontmatter={"type": "doc", "tags": ["x"] * 21},
     )
     assert parse(get_raw(PATH)).frontmatter == {**FM, "seq": 1}
+
+
+# --- carried-forward frontmatter is re-validated (§10.2) ----------------------------
+
+
+RICH = {
+    "type": "doc",
+    "title": "Rear bar",
+    "description": "Sway bar notes",
+    "tags": ["racing", "setup"],
+    "status": "draft",
+    "sources": [{"resource": "https://example.com/bar"}],
+    "custom": "kept",
+}
+
+
+def test_stored_frontmatter_over_limits_is_400_and_writes_nothing(
+    ctx: ToolContext,
+    put_raw: Callable[..., str],
+    head_raw: Callable[..., Any],
+    get_raw: Callable[..., Any],
+) -> None:
+    """A block that only passed because it was never checked (written outside the
+    tools, or under an older limit) is refused when carried forward, naming the
+    field and saying it is the stored block that failed. Nothing is written."""
+    version = put_raw(PATH, {**FM, "tags": ["t"] * 200, "seq": 1}, "v1 body\n")
+    before = head_raw(PATH)
+    error = expect_error(
+        TOOL, ctx, 400, "bad_request", path=PATH, content="two", if_version=version
+    )
+    assert error.message.startswith("stored frontmatter: ")
+    assert "tags" in error.message
+    assert head_raw(PATH)["VersionId"] == before["VersionId"]
+    assert parse(get_raw(PATH)).body == "v1 body\n"
+
+
+def test_stored_frontmatter_within_limits_is_carried_forward(
+    ctx: ToolContext, put_raw: Callable[..., str], get_raw: Callable[..., Any]
+) -> None:
+    version = put_raw(PATH, {**RICH, "seq": 1}, "v1 body\n")
+    result = call(TOOL, ctx, path=PATH, content="two", if_version=version)
+    assert result["seq"] == 2
+    assert parse(get_raw(PATH)).frontmatter == {**RICH, "seq": 2}

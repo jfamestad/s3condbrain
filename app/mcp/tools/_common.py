@@ -15,7 +15,7 @@ import yaml
 
 from app.auth.types import Permission, Resolution
 from app.config import MAX_ARTICLE_BYTES, RESERVED_NAMES, RESERVED_TYPES
-from app.errors import bad_request
+from app.errors import ToolError, bad_request
 from app.mcp.protocol import ToolContext
 from app.storage.articles import META_ACTOR, META_KIND, ArticleStore
 from app.storage.markdown import MAX_FRONTMATTER_BYTES, MAX_FRONTMATTER_DEPTH, serialize
@@ -294,6 +294,35 @@ def validate_frontmatter(value: Any, *, drop_seq: bool = False) -> dict[str, Any
             "Move long material into the article body."
         )
     return value
+
+
+def revalidate_stored(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    """Re-check a stored block a tool is about to carry forward unchanged.
+
+    ``validate_frontmatter`` runs on the caller's block; when a tool keeps the
+    stored one instead (update without ``frontmatter``, archive, unarchive, move)
+    the same §10.2 limits apply, or an object written under an older limit — or
+    straight into the bucket — would be re-signed as a fresh version. Runs before
+    the tool adds its own fields, so ``seq`` is dropped here and set by the caller.
+
+    Args:
+        frontmatter: The stored block as ``parse`` returned it, ``seq`` included.
+            ``type`` must be a document type; a tool that retires the block sets
+            ``archived`` afterwards.
+
+    Returns:
+        A copy without ``seq``, ready for the tool's server-written fields.
+
+    Raises:
+        ToolError: 400 naming the field, prefixed ``stored frontmatter:`` so a
+            person knows the article's existing block is what failed, not input.
+    """
+    try:
+        return dict(validate_frontmatter(frontmatter, drop_seq=True))
+    except ToolError as error:
+        if error.status != 400:
+            raise
+        raise bad_request(f"stored frontmatter: {error.message}") from None
 
 
 def serialize_article(frontmatter: dict[str, Any], content: str) -> bytes:
@@ -579,6 +608,7 @@ __all__ = [
     "parent_folder",
     "reject_reserved_name",
     "require_grant",
+    "revalidate_stored",
     "serialize_article",
     "store",
     "summary_from",
