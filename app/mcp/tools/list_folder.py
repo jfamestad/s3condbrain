@@ -1,10 +1,14 @@
 """``list_folder`` — ``wiki.read`` · ``read`` on path (HANDOFF §10.4).
 
-Skeleton behaviour (§11.4): ``ListObjectsV2`` under a LIST credential scoped to the
-folder, returning child folders and article summaries with ``path``, ``type``
-(``doc``), ``version``, ``trust`` (``unverified``) and ``size_bytes`` — **no titles,
-descriptions or tags, and no pointer/tombstone filtering**; those need per-child
-metadata, which increment A supplies through the ``_listing.json`` projection.
+Renders one folder from its ``_listing.json`` projection (§8.6): child folders that
+hold at least one visible child, articles as full summaries — titles, descriptions,
+tags, status, trust — with pointers and archive tombstones already filtered out by
+the projection.
+
+The read self-heals: the listing's ``(name, etag)`` set is compared with a live
+``ListObjectsV2`` and rebuilt on mismatch. A rebuild is persisted only when the
+caller holds ``write`` on the folder (the credential is then MAINTAIN, which can put
+the tagged listing); a reader's rebuild is computed in memory and returned.
 
 A subject without ``read`` on the folder gets ``404``, never ``403`` (§10.4, §10.15):
 a ``403`` would confirm the folder exists.
@@ -22,12 +26,12 @@ from app.mcp.protocol import Tool, ToolContext
 from app.mcp.tools._common import (
     ARTICLE_SUMMARY_SCHEMA,
     FOLDER_PATH_SCHEMA,
-    TRUST_UNVERIFIED,
     folder_path,
-    store,
     summary_from,
 )
+from app.mcp.tools._listings import index
 from app.storage.articles import AccessDenied
+from app.storage.listings import Listing, ListingChild, is_stale, join
 
 DESCRIPTION = (
     "Immediate contents of one folder — child folders by name, articles as summaries. "
@@ -52,43 +56,58 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 ROOT = "/"
-DEFAULT_TYPE = "doc"
+
+
+def summary_of(folder: str, child: ListingChild) -> dict[str, Any]:
+    """An ``article_summary`` (§10.2) for one projected article child."""
+    return summary_from(
+        join(folder, child.name),
+        type=child.type,
+        version=child.etag,
+        trust=child.trust,
+        size_bytes=child.size,
+        seq=child.seq,
+        title=child.title,
+        description=child.description,
+        tags=list(child.tags) if child.tags else None,
+        status=child.status,
+        stale=is_stale(child.stale_after),
+    )
+
+
+def render(folder: str, listing: Listing) -> dict[str, Any]:
+    """The §10.4 result for a listing: visible folders as paths, articles as summaries."""
+    return {
+        "path": folder,
+        "folders": sorted(join(folder, c.name) for c in listing.folders if c.visible),
+        "articles": [summary_of(folder, c) for c in sorted(listing.articles, key=lambda c: c.name)],
+        "truncated": False,
+    }
 
 
 def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     path = folder_path(args.get("path"))
 
     try:
-        ctx.grants.require(ctx.subject, path, Permission.READ)
+        resolution = ctx.require(path, Permission.READ)
     except ToolError as error:
         if error.status == 403:
             raise not_found() from None
         raise
 
-    s3 = ctx.minter.s3(ctx.subject, Shape.LIST, path)
+    writable = resolution.allows(Permission.WRITE)
+    s3 = ctx.minter.s3(ctx.subject, Shape.MAINTAIN if writable else Shape.LIST, path)
     try:
-        folders, articles = store(ctx).list_children(s3, path)
+        listing = index(ctx).read_or_rebuild(s3, path, writable=writable)
     except AccessDenied:
         raise not_found() from None
 
-    if not folders and not articles and path != ROOT:
+    result = render(path, listing)
+    if path != ROOT and not result["folders"] and not result["articles"]:
+        # Nothing visible here: a folder that does not exist, or one holding only
+        # pointers and tombstones. Both read as absence (§10.4).
         raise not_found()
-
-    return {
-        "path": path,
-        "folders": folders,
-        "articles": [
-            summary_from(
-                entry.path,
-                type=DEFAULT_TYPE,
-                version=entry.version,
-                trust=TRUST_UNVERIFIED,
-                size_bytes=entry.size,
-            )
-            for entry in articles
-        ],
-        "truncated": False,
-    }
+    return result
 
 
 TOOL = Tool(
@@ -100,4 +119,4 @@ TOOL = Tool(
     handler=handle,
 )
 
-__all__ = ["TOOL", "handle"]
+__all__ = ["TOOL", "handle", "render", "summary_of"]

@@ -87,12 +87,14 @@ class ApiStack(cdk.Stack):
         # otherwise CDK puts them next to the function and compute -> api -> compute cycles.
         self._authorizer_fn = self._import_fn("AuthorizerFn", compute.authorizer_fn)
         self._mcp_fn = self._import_fn("McpFn", compute.mcp_fn)
+        self._web_fn = self._import_fn("WebFn", compute.web_fn)
 
         self.api = self._create_api()
         authorizer = self._create_authorizer()
         self._add_gateway_responses()
         self._add_mcp_routes(authorizer)
         self._add_metadata_routes()
+        self._add_web_routes()
         self._add_custom_domain()
         self._add_budget()
 
@@ -209,6 +211,17 @@ class ApiStack(cdk.Stack):
             allow_headers=CORS_ALLOW_HEADERS,
             expose_headers=["WWW-Authenticate"],
             max_age=Duration.hours(1),
+        )
+
+    def _add_web_routes(self) -> None:
+        """``/app`` and ``/app/{proxy+}``: the web application (§11.6). No gateway
+        authorizer — it authenticates with its own session cookie; the function
+        answers every path under the prefix, including its own 404 page."""
+        integration = apigateway.LambdaIntegration(self._web_fn, proxy=True)
+        app = self.api.root.add_resource("app")
+        app.add_method("ANY", integration, authorization_type=apigateway.AuthorizationType.NONE)
+        app.add_resource("{proxy+}").add_method(
+            "ANY", integration, authorization_type=apigateway.AuthorizationType.NONE
         )
 
     def _add_metadata_routes(self) -> None:

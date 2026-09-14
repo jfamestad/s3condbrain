@@ -24,6 +24,7 @@ Exposes ``authorizer_fn``, ``mcp_fn``, ``storage_role``, ``canonical_mcp_url``,
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -32,6 +33,7 @@ from aws_cdk import Duration, RemovalPolicy
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 from infra.config import EnvConfig
@@ -76,12 +78,23 @@ class ComputeStack(cdk.Stack):
         self.authorizer_fn = self._create_authorizer(common_env)
 
         mcp_role = self._create_mcp_role()
-        self.storage_role = self._create_storage_role(mcp_role)
+        web_role = self._create_web_role()
+        self.storage_role = self._create_storage_role(mcp_role, web_role)
         self._grant_mcp_role(mcp_role)
         self.mcp_fn = self._create_mcp_fn(mcp_role, common_env)
+        self.web_secret = self._create_web_secret()
+        self._grant_web_role(web_role)
+        self.web_fn = self._create_web_fn(web_role, common_env)
 
         cdk.CfnOutput(self, "StorageRoleArn", value=self.storage_role.role_arn)
         cdk.CfnOutput(self, "McpFunctionName", value=self.mcp_fn.function_name)
+        cdk.CfnOutput(self, "WebFunctionName", value=self.web_fn.function_name)
+        cdk.CfnOutput(
+            self,
+            "WebSecretArn",
+            value=self.web_secret.secret_arn,
+            description="Fill client_secret and api_key from the WorkOS dashboard (docs/DEPLOY.md)",
+        )
 
     # ------------------------------------------------------------------ urls
 
@@ -195,10 +208,21 @@ class ComputeStack(cdk.Stack):
         role.add_to_policy(
             iam.PolicyStatement(
                 sid="TableKeyDecrypt",
-                actions=["kms:Decrypt"],
+                actions=["kms:Decrypt", "kms:GenerateDataKey"],
                 resources=[self.storage.key.key_arn],
             )
         )
+        ratelimit = getattr(self.storage, "ratelimit_table", None)
+        if ratelimit is not None:
+            # Counters only (§12.6). This is the one write the MCP role holds, on a
+            # table that carries no grants and no content.
+            role.add_to_policy(
+                iam.PolicyStatement(
+                    sid="RateLimitCounters",
+                    actions=["dynamodb:UpdateItem"],
+                    resources=[ratelimit.table_arn],
+                )
+            )
 
     def _create_mcp_fn(self, role: iam.Role, env: dict[str, str]) -> lambda_.Function:
         return lambda_.Function(
@@ -223,14 +247,128 @@ class ComputeStack(cdk.Stack):
                 "CREDENTIAL_CACHE_SECONDS": str(self.cfg.credential_cache_seconds),
                 "MCP_STRICT_HEADERS": "false",
                 "MCP_PROTOCOL_VERSION": MCP_PROTOCOL_VERSION,
+                "RATELIMIT_TABLE": self._ratelimit_table_name(),
             },
             description="wiki MCP data plane (§8.1)",
         )
 
+    def _ratelimit_table_name(self) -> str:
+        table = getattr(self.storage, "ratelimit_table", None)
+        return table.table_name if table is not None else ""
+
+    # -------------------------------------------------------------- web app
+
+    def _create_web_role(self) -> iam.Role:
+        return iam.Role(
+            self,
+            "WebRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            description="wiki web application: the only role that can write grants (§8.8)",
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                ),
+                iam.ManagedPolicy.from_aws_managed_policy_name("AWSXRayDaemonWriteAccess"),
+            ],
+        )
+
+    def _create_web_secret(self) -> secretsmanager.Secret:
+        """One JSON secret: client_secret + api_key (operator fills from WorkOS) and a
+        generated session_key (48 alphanumerics → 36 bytes after base64url)."""
+        return secretsmanager.Secret(
+            self,
+            "WebSecret",
+            description="wiki web app: AuthKit client secret, WorkOS API key, session key",
+            # AWS-managed key: a CMK here would put a key-policy grant for the web role
+            # into the storage stack and cycle the dependency graph.
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template=json.dumps(
+                    {"client_secret": "REPLACE-ME", "api_key": "REPLACE-ME"}
+                ),
+                generate_string_key="session_key",
+                password_length=48,
+                exclude_punctuation=True,
+                include_space=False,
+            ),
+            removal_policy=RemovalPolicy.RETAIN if self.cfg.retain_data else RemovalPolicy.DESTROY,
+        )
+
+    def _grant_web_role(self, role: iam.Role) -> None:
+        table = self.storage.table
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="GrantTableReadWrite",
+                actions=[
+                    "dynamodb:GetItem",
+                    "dynamodb:BatchGetItem",
+                    "dynamodb:Query",
+                    "dynamodb:Scan",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
+                ],
+                resources=[table.table_arn, f"{table.table_arn}/index/*"],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="AssumeStorageRole",
+                actions=["sts:AssumeRole"],
+                resources=[self.storage_role.role_arn],
+            )
+        )
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="KeyUse",
+                actions=["kms:Decrypt", "kms:GenerateDataKey"],
+                resources=[self.storage.key.key_arn],
+            )
+        )
+        self.web_secret.grant_read(role)
+        role.add_to_policy(
+            iam.PolicyStatement(
+                sid="AuditLogQueries",
+                actions=["logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery"],
+                resources=[self.mcp_fn.log_group.log_group_arn],
+            )
+        )
+
+    def _create_web_fn(self, role: iam.Role, env: dict[str, str]) -> lambda_.Function:
+        root = self.canonical_mcp_url.removesuffix("/mcp")
+        return lambda_.Function(
+            self,
+            "Web",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            architecture=lambda_.Architecture.ARM_64,
+            code=self._code("mcp"),  # same package; different handler
+            handler="app.web.handler.handle",
+            role=role,
+            memory_size=512,
+            timeout=Duration.seconds(30),
+            tracing=lambda_.Tracing.ACTIVE,
+            log_group=self._log_group("WebLogs"),
+            environment={
+                **env,
+                "WIKI_BUCKET": self.storage.bucket.bucket_name,
+                "GRANT_TABLE": self.storage.table.table_name,
+                "STORAGE_ROLE_ARN": self.storage_role.role_arn,
+                "KMS_KEY_ARN": self.storage.key.key_arn,
+                "CREDENTIAL_CACHE_SECONDS": str(self.cfg.credential_cache_seconds),
+                "WEB_BASE_URL": f"{root}/app",
+                "WORKOS_CLIENT_ID": getattr(self.cfg, "workos_web_client_id", "")
+                or str(self.node.try_get_context("workosWebClientId") or ""),
+                "WEB_SECRET_ARN": self.web_secret.secret_arn,
+                "SESSION_HOURS": "12",
+                "MCP_LOG_GROUP": self.mcp_fn.log_group.log_group_name,
+            },
+            description="wiki web application: read view and admin console (§11.6)",
+        )
+
     # ----------------------------------------------------------- storage role
 
-    def _create_storage_role(self, mcp_role: iam.Role) -> iam.Role:
-        """The outer bound: union of the three §8.5 shapes over ``a/*`` and the key."""
+    def _create_storage_role(self, mcp_role: iam.Role, web_role: iam.Role) -> iam.Role:
+        """The outer bound: union of the §8.5 shapes over ``a/*`` and the key.
+        Assumed by the MCP function and the web application, never by a person."""
         bucket = self.storage.bucket
         outer_bound = iam.PolicyDocument(
             statements=[
@@ -240,8 +378,13 @@ class ComputeStack(cdk.Stack):
                     resources=[bucket.arn_for_objects("a/*")],
                 ),
                 iam.PolicyStatement(
+                    sid="TagListingsOnly",
+                    actions=["s3:PutObjectTagging"],
+                    resources=[bucket.arn_for_objects("a/*_listing.json")],
+                ),
+                iam.PolicyStatement(
                     sid="ListWithinArticles",
-                    actions=["s3:ListBucket"],
+                    actions=["s3:ListBucket", "s3:ListBucketVersions"],
                     resources=[bucket.bucket_arn],
                     conditions={"StringLike": {"s3:prefix": ["a/*"]}},
                 ),
@@ -255,7 +398,7 @@ class ComputeStack(cdk.Stack):
         return iam.Role(
             self,
             "StorageRole",
-            assumed_by=mcp_role,
+            assumed_by=iam.CompositePrincipal(mcp_role, web_role),
             max_session_duration=Duration.hours(1),
             description="wiki storage role: assumed per operation with a session policy (§8.5)",
             inline_policies={"OuterBound": outer_bound},

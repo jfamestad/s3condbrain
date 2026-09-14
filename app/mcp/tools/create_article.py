@@ -2,8 +2,10 @@
 
 Sequence: validate → grant check on the parent folder (the cascade resolves every
 ancestor) → mint a WRITE credential for the exact key → ``PutObject`` with
-``If-None-Match: *``. The grant check precedes minting so a subject with no grants
-never causes an ``AssumeRole`` (§11.3 step 9).
+``If-None-Match: *`` → refresh the parent folder's listing (§8.3, §8.6). The grant
+check precedes minting so a subject with no grants never causes an ``AssumeRole``
+(§11.3 step 9). The listing refresh runs under a MAINTAIN credential for the parent
+and can never fail the write (``_listings.refresh_parent``).
 """
 
 from __future__ import annotations
@@ -30,7 +32,9 @@ from app.mcp.tools._common import (
     store,
     validate_frontmatter,
 )
+from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed
+from app.storage.listings import ListingChild, basename
 from app.storage.markdown import parse, serialize
 
 DESCRIPTION = (
@@ -94,6 +98,9 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise _occupied(st, s3, path) from None
     except AccessDenied:
         raise forbidden() from None
+    refresh_parent(
+        ctx, path, ListingChild.article(basename(path), written.etag, len(body), frontmatter)
+    )
     return {"path": path, "version": written.version, "seq": 1}
 
 

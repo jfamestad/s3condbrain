@@ -31,6 +31,7 @@ _BATCH_GET_LIMIT = 100
 _UNPROCESSED_RETRIES = 3
 _SUBJECT_PREFIX = "U#"
 _NODE_PREFIX = "N#"
+_NODE_INDEX = "gs1"
 _PROFILE_SK = "PROFILE"
 
 
@@ -183,13 +184,43 @@ class GrantStore:
 
     def grants_for_node(self, node: str) -> list[Grant]:
         """Every grant attached to exactly ``node`` (GSI1 query on ``N#<node>``).
-        Increment B implements this for the move-impact report (§4.6, §8.5)."""
-        raise NotImplementedError
+
+        Answers "who can reach this node" for the move-impact report (§4.6, §8.5).
+        A grant on an ancestor is not returned here; ``subjects_reaching`` walks the
+        ancestors.
+        """
+        kwargs: dict[str, Any] = {
+            "IndexName": _NODE_INDEX,
+            "KeyConditionExpression": Key("gs1pk").eq(f"{_NODE_PREFIX}{node}"),
+        }
+        out: list[Grant] = []
+        while True:
+            response = self.table.query(**kwargs)
+            out.extend(_grant_from_item(i) for i in response.get("Items", []) if _is_grant_row(i))
+            last = response.get("LastEvaluatedKey")
+            if not last:
+                return out
+            kwargs["ExclusiveStartKey"] = last
 
     def subjects_reaching(self, path: str) -> dict[str, Resolution]:
         """Effective permission per subject for ``path``: union over
-        ``grants_for_node`` on every ancestor. Bounded by depth × grantees."""
-        raise NotImplementedError
+        ``grants_for_node`` on every ancestor. Bounded by depth × grantees.
+
+        Returns:
+            ``{subject: Resolution}`` for every subject whose effective permission
+            on ``path`` is not ``None``. A subject with grants only elsewhere in the
+            tree does not appear.
+        """
+        by_subject: dict[str, list[Grant]] = {}
+        for node in ancestors(path):
+            for grant in self.grants_for_node(node):
+                by_subject.setdefault(grant.subject, []).append(grant)
+        reaching: dict[str, Resolution] = {}
+        for subject, grants in by_subject.items():
+            resolution = effective(grants, path)
+            if resolution.permission is not None:
+                reaching[subject] = resolution
+        return reaching
 
     def put_grant(self, grant: Grant) -> None:
         """Write one grant row plus its GSI keys. Bootstrap and tests only."""

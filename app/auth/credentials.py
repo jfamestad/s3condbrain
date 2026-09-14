@@ -35,6 +35,8 @@ _READ_KMS_ACTIONS = ["kms:Decrypt"]
 _WRITE_OBJECT_ACTIONS = [*_READ_OBJECT_ACTIONS, "s3:PutObject"]
 _WRITE_KMS_ACTIONS = [*_READ_KMS_ACTIONS, "kms:GenerateDataKey"]
 _LIST_ACTIONS = ["s3:ListBucket"]
+_TAG_ACTIONS = ["s3:PutObjectTagging"]
+_LISTING_NAME = "_listing.json"
 
 
 class Shape(StrEnum):
@@ -99,33 +101,50 @@ def list_prefix(path: str) -> str:
     return _folder_prefix(p)
 
 
+def listing_key(path: str) -> str:
+    """The ``_listing.json`` key of the folder ``path`` names (an article path yields
+    its parent folder's): ``/racing`` → ``a/racing/_listing.json``; root →
+    ``a/_listing.json``."""
+    return f"{list_prefix(path)}{_LISTING_NAME}"
+
+
 def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> dict[str, Any]:
     """Build the inline session policy for one operation.
 
     Args:
-        shape: Which of the three shapes.
+        shape: Which of the shapes.
         bucket: Bucket name (not ARN).
         kms_key_arn: The one customer-managed key.
-        path: Absolute article or folder path the operation targets.
+        path: Absolute article or folder path the operation targets. MAINTAIN is a
+            folder shape: an article path is taken to mean its parent folder.
 
     Returns:
         An IAM policy document. A READ shape carries **no** ``s3:ListBucket``; a LIST
         shape carries it on the bucket ARN with an ``s3:prefix`` StringLike condition
         of ``list_prefix(path) + "*"``; a WRITE shape adds ``s3:PutObject`` and
-        ``kms:GenerateDataKey``.
+        ``kms:GenerateDataKey``; a MAINTAIN shape is WRITE + LIST over the folder plus
+        ``s3:PutObjectTagging`` on that folder's ``_listing.json`` key only (§8.6,
+        §8.9 — the listing write carries a tag, and a tagged ``PutObject`` needs the
+        tagging permission too).
         Must stay well inside the 2 KB inline limit.
 
     Raises:
         ValueError: on an unknown shape or a relative path.
     """
     shape = Shape(shape)
-    object_actions = _WRITE_OBJECT_ACTIONS if shape is Shape.WRITE else _READ_OBJECT_ACTIONS
-    kms_actions = _WRITE_KMS_ACTIONS if shape is Shape.WRITE else _READ_KMS_ACTIONS
+    if shape is Shape.MAINTAIN:
+        # Listing upkeep is a folder operation whatever path it was handed.
+        path = _normalise(path)
+        if _is_article(path):
+            path = path.rsplit("/", 1)[0] or "/"
+    writes = shape in (Shape.WRITE, Shape.MAINTAIN)
+    object_actions = _WRITE_OBJECT_ACTIONS if writes else _READ_OBJECT_ACTIONS
+    kms_actions = _WRITE_KMS_ACTIONS if writes else _READ_KMS_ACTIONS
     statements: list[dict[str, Any]] = [
         {"Effect": "Allow", "Action": list(object_actions), "Resource": s3_resource(bucket, path)},
         {"Effect": "Allow", "Action": list(kms_actions), "Resource": kms_key_arn},
     ]
-    if shape is Shape.LIST:
+    if shape in (Shape.LIST, Shape.MAINTAIN):
         # StringLike ``a/racing/*`` matches ``a/racing/`` itself (``*`` may be empty), so
         # delimiter listings of the folder pass, and nothing shorter or elsewhere does.
         # A request with no Prefix has no ``s3:prefix`` key and fails the condition.
@@ -135,6 +154,14 @@ def session_policy(shape: Shape, bucket: str, kms_key_arn: str, path: str) -> di
                 "Action": list(_LIST_ACTIONS),
                 "Resource": f"arn:aws:s3:::{bucket}",
                 "Condition": {"StringLike": {"s3:prefix": [f"{list_prefix(path)}*"]}},
+            }
+        )
+    if shape is Shape.MAINTAIN:
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": list(_TAG_ACTIONS),
+                "Resource": f"arn:aws:s3:::{bucket}/{listing_key(path)}",
             }
         )
     return {"Version": "2012-10-17", "Statement": statements}
@@ -229,6 +256,7 @@ __all__ = [
     "CredentialMinter",
     "Shape",
     "list_prefix",
+    "listing_key",
     "s3_key",
     "s3_resource",
     "session_policy",

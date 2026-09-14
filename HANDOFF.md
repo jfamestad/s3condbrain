@@ -1297,7 +1297,7 @@ Decided here rather than left open. Each is cheap to reverse before implementati
 | MCP | MCP Python SDK | Stateless mode; no session handling needed under 2026-07-28. **Confirm the SDK implements that revision before step 7** — `server/discover`, the `Mcp-*` headers, `-32020`. If it does not, `server.py` hand-rolls the transport (a few hundred lines) and the SDK is used for schemas only. Decide this at step 7, not by discovery halfway through it |
 | Token validation | `PyJWT` + `cryptography` | In the authorizer only. Pin algorithm, issuer, audience, expiry explicitly |
 | AWS | `boto3` | STS, S3, DynamoDB |
-| Browser | TypeScript | Web application only — not in v1 |
+| Web application | Python, server-rendered (Jinja2), on a third Lambda at `/app/*` of the same API | **Decided at increment F, overriding the earlier TypeScript note.** One language across the codebase; same-origin cookies so no CORS or token-in-browser; the smallest surface to review. Markdown rendered with HTML disabled (article bodies are untrusted). A static front end can replace it later without touching the data path. |
 | Infrastructure | CDK in Python | One language across app and infra |
 | Tests | `pytest` | Security checks are tests, not a checklist — §11.3 step 9 |
 
@@ -1417,6 +1417,14 @@ Three jobs, all of them human.
 - **Administration.** User creation, grants and revocations, ownership assignment, audit log, hard delete — everything §4.7 keeps off the tool surface.
 
 Since non-technical people must be able to operate this, **the admin console is the surface that decides whether they can.** Grants should read as sentences — *"Dana can read everything under Racing"* — not as ACL rows. Owners, not just root-owners, live here too: §4.10 makes every owner an administrator of their own subtree, so the console must scope itself to what the viewer owns rather than assuming a single all-seeing operator.
+
+**How the web application authenticates (decided).** It is its own confidential OAuth client of AuthKit — authorization code + PKCE, `openid profile email` — and proves the login with the **ID token**, verified with the algorithm pinned exactly as the authorizer does. The access token is discarded: the app never calls anything on the user's behalf; it acts under its own role with the user's grants, resolving them per request and minting credentials per operation, the same data path as the tools (§4.8). The session is a signed `__Host-` cookie (`Secure; HttpOnly; SameSite=Lax`, 12 h); revocation is checked per request against the PROFILE status, so disabling a person takes effect on their next click, not at cookie expiry (§12.9). Every state-changing form carries a CSRF token bound to the session. A WorkOS identity with no PROFILE row is refused at login — default deny (§3.3) applies to the web app exactly as to the tools.
+
+**Hard delete (decided).** No function holds `s3:DeleteObjectVersion` (§8.8), so the console does not delete. It renders the break-glass runbook for a path — the exact version ids and the commands — and logs that it was viewed. The deletion is performed by a person under the break-glass role in the console. "Exists, logged, rare" is satisfied; "reachable from a function" deliberately is not.
+
+**Adding a person (decided, §15.2 amended).** The console creates the user through the WorkOS management API and sends the AuthKit invitation (WorkOS's email, with a sign-in link); it then shows the owner a block to send on — the connector URL and the click path — rather than running its own mail. Two messages instead of one, and no email infrastructure to secure.
+
+**Pending grant requests (§4.10) are deferred past v1.** Granting stays human-only either way; the agent-proposal path can arrive later without touching the tool surface's security posture.
 
 ---
 
@@ -1617,7 +1625,6 @@ None of these block the skeleton. Tracked so they are not lost.
 | CloudTrail S3 read events | The application log already records every read (AS-10, §12.7). This is only whether bucket-level read events are wanted on top, at their cost. | Increment D |
 
 *Retired by the post-review decisions:* the `s3:prefix` condition (now written into §8.5 and tested at step 3), the listing rebuild trigger (lazy, conditional write — §8.6), the pointer chain depth (no server-side traversal — §5.3), the Object Lock retention period (one year — §8.9), and article-grant discoverability (searchable by path filter, not listable — §4.6, §8.7).
-| Pending grant requests in v1, or later | §4.10 keeps granting human-only either way. Whether agents may *propose* grants is a scope call, not a security one. | Increment D |
 | `O-3` AuthKit consent screen behaviour | What identity it shows for CIMD clients, whether it displays the `client_id` URL host rather than the self-asserted `client_name`, and whether it warns on loopback redirect URIs. **This is the anti-phishing surface**, now WorkOS's to get right rather than ours. | Before increment E |
 | `O-4` Measured revocation latency | End to end, including the credential cache. Confirm token lifetime and refresh configurability against AS-9. | Before increment E |
 | `O-5` Anthropic's published egress range | A hardcoded CIDR in a deployment prerequisite is exactly the kind of fact that goes stale without anyone noticing. Verify before AS-11 is treated as normative. | Increment G |
@@ -1655,7 +1662,7 @@ None of these block the skeleton. Tracked so they are not lost.
 Five steps, of which the person performs three.
 
 1. An owner enters the new person's email in the admin console. The system creates them at the authorization server and records a profile plus their initial grants.
-2. They receive **one email** carrying two things: a link to establish sign-in, and the connector URL with the exact click path to add it.
+2. They receive the AuthKit invitation email (sign-in link) from WorkOS, and separately the connector URL with the exact click path — the owner copies that block from the console and sends it however the family communicates. (One email was the design; two is the v1 build, because the second would otherwise mean running mail infrastructure.)
 3. They sign in once in a browser — magic link rather than a password, so nothing has to be chosen, remembered or reset.
 4. They add the connector **on web or desktop** and approve the consent screen. **This step cannot begin on a phone.**
 5. From then on it works everywhere, phone included.

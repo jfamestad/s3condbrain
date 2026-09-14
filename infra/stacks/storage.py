@@ -3,7 +3,9 @@
 Creates: KMS key (rotation on) · bucket (versioned, SSE-KMS with that key, public access
 blocked, TLS enforced, Object Lock prod-only with 1-year governance default retention,
 lifecycle expiring non-current listing versions once retention lapses) · grant table
-(pk/sk, GSI ``gs1`` on gs1pk/gs1sk, pay-per-request, SSE-KMS with the same key, PITR).
+(pk/sk, GSI ``gs1`` on gs1pk/gs1sk, pay-per-request, SSE-KMS with the same key, PITR) ·
+rate-limit table ``wiki-<env>-ratelimit`` (pk/sk, TTL on ``ttl``, same key, no PITR —
+it holds fixed-window counters and nothing worth restoring, §12.6).
 
 The storage role — the outer bound the session policies narrow from — lives in
 ``ComputeStack`` because its trust policy names the MCP function's role, and a
@@ -11,10 +13,11 @@ key-policy statement pointing back at it from here would be a cyclic cross-stack
 reference. The key's default policy delegates to IAM for this account, so the role's
 own inline policy is sufficient (§8.8).
 
-Deferred: the CloudWatch alarm on bucket-policy change (§8.8) needs a CloudTrail
-trail and metric filter and is not part of build step 1.
+The CloudWatch alarm on bucket-policy change (§8.8), the trail, and backups live in
+``OpsStack``; the MCP role's ``UpdateItem`` on the rate-limit table is granted in
+``ComputeStack``.
 
-Exposes ``key``, ``bucket``, ``table`` for ComputeStack.
+Exposes ``key``, ``bucket``, ``table``, ``ratelimit_table``.
 """
 
 from __future__ import annotations
@@ -40,6 +43,10 @@ LISTING_NONCURRENT_EXPIRY_DAYS = 365
 LISTING_TAG_KEY = "wiki:listing"
 LISTING_TAG_VALUE = "true"
 
+#: DynamoDB TTL attribute on the rate-limit table (``app.auth.ratelimit`` writes it as
+#: epoch seconds on every counter row).
+RATELIMIT_TTL_ATTRIBUTE = "ttl"
+
 
 class StorageStack(cdk.Stack):
     """Bucket, grant table, and the one customer-managed key that covers both."""
@@ -52,9 +59,11 @@ class StorageStack(cdk.Stack):
         self.key = self._create_key()
         self.bucket = self._create_bucket()
         self.table = self._create_table()
+        self.ratelimit_table = self._create_ratelimit_table()
 
         cdk.CfnOutput(self, "BucketName", value=self.bucket.bucket_name)
         cdk.CfnOutput(self, "GrantTableName", value=self.table.table_name)
+        cdk.CfnOutput(self, "RateLimitTableName", value=self.ratelimit_table.table_name)
         cdk.CfnOutput(self, "KmsKeyArn", value=self.key.key_arn)
 
     def _create_key(self) -> kms.Key:
@@ -121,3 +130,22 @@ class StorageStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
         return table
+
+    def _create_ratelimit_table(self) -> dynamodb.Table:
+        """Fixed-window counters (§12.6): ``pk = RL#<subject>``, ``sk = <window>``.
+
+        Its own table so the MCP role's ``UpdateItem`` never touches the grant table
+        (§4.7, §8.8). Rows expire through ``ttl``; nothing here is backed up.
+        """
+        return dynamodb.Table(
+            self,
+            "RateLimit",
+            table_name=f"wiki-{self.cfg.name}-ratelimit",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
+            encryption_key=self.key,
+            time_to_live_attribute=RATELIMIT_TTL_ATTRIBUTE,
+            removal_policy=self._removal,
+        )

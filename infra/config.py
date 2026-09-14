@@ -26,6 +26,8 @@ class EnvConfig:
         retain_data: RETAIN removal policy on bucket/table/key.
         allowed_origins: CORS + Origin-validation allowlist.
         credential_cache_seconds: Passed through to the function.
+        log_retention_days: CloudTrail log group and log-bucket retention (§12.7: ninety).
+        backup_retention_days: How long each daily grant-table snapshot is kept (§12.5).
     """
 
     name: str
@@ -38,6 +40,8 @@ class EnvConfig:
     retain_data: bool
     allowed_origins: tuple[str, ...] = ("https://claude.ai",)
     credential_cache_seconds: int = 900
+    log_retention_days: int = 90
+    backup_retention_days: int = 35
 
     @property
     def canonical_mcp_url(self) -> str | None:

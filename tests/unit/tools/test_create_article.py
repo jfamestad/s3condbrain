@@ -46,7 +46,14 @@ def test_create_writes_seq_1_and_metadata(
     stored = parse(get_raw(PATH))
     assert stored.frontmatter == {**FM, "seq": 1}
     assert stored.body == "# Rear bar\n\nbody\n"
-    assert minter.calls == [(OWNER, Shape.WRITE, PATH)]
+    # The write itself, then listing upkeep (§8.6): MAINTAIN on the parent, and on each
+    # ancestor as the first article makes the folder chain visible.
+    assert minter.calls[0] == (OWNER, Shape.WRITE, PATH)
+    assert minter.calls[1:] == [
+        (OWNER, Shape.MAINTAIN, "/racing/setup"),
+        (OWNER, Shape.MAINTAIN, "/racing"),
+        (OWNER, Shape.MAINTAIN, "/"),
+    ]
 
 
 def test_create_then_read_round_trip(ctx: ToolContext) -> None:

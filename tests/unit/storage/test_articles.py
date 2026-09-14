@@ -241,3 +241,180 @@ def test_list_children_follows_pagination(
     assert len(articles) == 1_050
     assert articles[0].path == "/big/0000.md"
     assert articles[-1].path == "/big/1049.md"
+
+
+# --- versions (increment C: §8.3, §10.7) --------------------------------------------
+
+
+def _write_versions(bucket: Any, settings: Settings, key: str, count: int) -> list[str]:
+    """``count`` versions of ``key``, oldest first; returns their version ids in that order."""
+    ids: list[str] = []
+    for i in range(count):
+        response = bucket.put_object(
+            Bucket=settings.bucket,
+            Key=key,
+            Body=f"v{i}".encode(),
+            Metadata={META_ACTOR: f"human:u{i}", META_KIND: "write"},
+        )
+        ids.append(response["VersionId"])
+    return ids
+
+
+def _decode_cursor(cursor: str) -> dict[str, Any]:
+    import base64
+    import json
+
+    return json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+
+
+def test_list_versions_newest_first(bucket: Any, store: ArticleStore, settings: Settings) -> None:
+    ids = _write_versions(bucket, settings, "a/x.md", 3)
+    entries, cursor = store.list_versions(bucket, "/x.md")
+    assert cursor is None
+    assert [e.version_id for e in entries] == list(reversed(ids))
+    for entry in entries:
+        assert entry.key == "a/x.md"
+        assert entry.etag.startswith('"')
+        assert entry.size == 2
+        assert entry.last_modified is not None
+        assert entry.body == b""
+        assert entry.metadata == {}
+
+
+def test_list_versions_empty_key(bucket: Any, store: ArticleStore) -> None:
+    assert store.list_versions(bucket, "/never.md") == ([], None)
+
+
+def test_list_versions_prefix_collision_does_not_leak(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    # ``Prefix=a/x.md`` also matches ``a/x.mdx.md``; neither listing may show the other.
+    short = _write_versions(bucket, settings, "a/x.md", 2)
+    longer = _write_versions(bucket, settings, "a/x.mdx.md", 3)
+
+    entries, cursor = store.list_versions(bucket, "/x.md", limit=10)
+    assert cursor is None
+    assert [e.version_id for e in entries] == list(reversed(short))
+    assert {e.key for e in entries} == {"a/x.md"}
+
+    entries, cursor = store.list_versions(bucket, "/x.mdx.md", limit=10)
+    assert cursor is None
+    assert [e.version_id for e in entries] == list(reversed(longer))
+
+    # With ``limit`` equal to the short key's count, the spill-over check must look
+    # past the longer key's versions without counting them or issuing a cursor.
+    entries, cursor = store.list_versions(bucket, "/x.md", limit=2)
+    assert cursor is None
+    assert len(entries) == 2
+
+
+def test_list_versions_cursor_walks_all_versions_one_at_a_time(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    ids = _write_versions(bucket, settings, "a/x.md", 3)
+    _write_versions(bucket, settings, "a/x.md.bak.md", 1)  # a colliding neighbour
+    seen: list[str] = []
+    cursors: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        entries, cursor = store.list_versions(bucket, "/x.md", limit=1, cursor=cursor)
+        assert len(entries) == 1
+        seen.append(entries[0].version_id or "")
+        if cursor is None:
+            break
+        cursors.append(cursor)
+    assert seen == list(reversed(ids))
+    assert len(cursors) == 2
+    # Cursor format: URL-safe base64 of ``{"k": key_marker, "v": version_id_marker}``.
+    assert _decode_cursor(cursors[0]) == {"k": "a/x.md", "v": ids[2]}
+    assert _decode_cursor(cursors[1]) == {"k": "a/x.md", "v": ids[1]}
+
+
+def test_list_versions_limit_exact_count_has_no_cursor(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    _write_versions(bucket, settings, "a/x.md", 3)
+    entries, cursor = store.list_versions(bucket, "/x.md", limit=3)
+    assert len(entries) == 3
+    assert cursor is None
+    entries, cursor = store.list_versions(bucket, "/x.md", limit=2)
+    assert len(entries) == 2
+    assert cursor is not None
+
+
+def test_list_versions_ignores_delete_markers(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    ids = _write_versions(bucket, settings, "a/x.md", 2)
+    bucket.delete_object(Bucket=settings.bucket, Key="a/x.md")  # a delete marker on top
+    ids += _write_versions(bucket, settings, "a/x.md", 1)
+    bucket.delete_object(Bucket=settings.bucket, Key="a/x.md")  # and another
+    entries, cursor = store.list_versions(bucket, "/x.md", limit=10)
+    assert cursor is None
+    assert [e.version_id for e in entries] == list(reversed(ids))
+    # Delete markers count toward MaxKeys; paging through them still yields every version.
+    walked: list[str] = []
+    cursor = None
+    while True:
+        page, cursor = store.list_versions(bucket, "/x.md", limit=1, cursor=cursor)
+        walked += [e.version_id or "" for e in page]
+        if cursor is None:
+            break
+    assert walked == list(reversed(ids))
+
+
+@pytest.mark.parametrize("cursor", ["", "not base64!", "eyJ4IjoxfQ", "e30"])
+def test_list_versions_rejects_malformed_cursor(
+    bucket: Any, store: ArticleStore, cursor: str
+) -> None:
+    with pytest.raises(ValueError):
+        store.list_versions(bucket, "/x.md", cursor=cursor)
+
+
+def test_list_versions_rejects_cursor_from_another_path(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    _write_versions(bucket, settings, "a/x.md", 2)
+    _, cursor = store.list_versions(bucket, "/x.md", limit=1)
+    assert cursor is not None
+    with pytest.raises(ValueError):
+        store.list_versions(bucket, "/y.md", cursor=cursor)
+
+
+def test_head_version_returns_metadata(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    ids = _write_versions(bucket, settings, "a/x.md", 2)
+    head = store.head_version(bucket, "/x.md", ids[0])
+    assert head is not None
+    assert head.key == "a/x.md"
+    assert head.version_id == ids[0]
+    assert head.metadata == {META_ACTOR: "human:u0", META_KIND: "write"}
+    assert head.size == 2
+    assert head.etag.startswith('"')
+    assert head.last_modified is not None
+    assert head.body == b""
+    assert store.head_version(bucket, "/x.md", "no-such-version") is None
+    # A version id that belongs to another key is not this path's.
+    other = _write_versions(bucket, settings, "a/y.md", 1)
+    assert store.head_version(bucket, "/x.md", other[0]) is None
+
+
+def test_get_version_from_another_key_is_none(
+    bucket: Any, store: ArticleStore, settings: Settings
+) -> None:
+    _write_versions(bucket, settings, "a/x.md", 1)
+    other = _write_versions(bucket, settings, "a/y.md", 1)
+    assert store.get_version(bucket, "/x.md", other[0]) is None
+
+
+def test_versions_denied_client_raises_access_denied(store: ArticleStore) -> None:
+    class DenyingVersions(DenyingClient):
+        def list_object_versions(self, **_: Any) -> Any:
+            raise _client_error("AccessDenied", 403, "ListObjectVersions")
+
+    denied = DenyingVersions()
+    with pytest.raises(AccessDenied):
+        store.list_versions(denied, "/x.md")
+    with pytest.raises(AccessDenied):
+        store.head_version(denied, "/x.md", "v1")

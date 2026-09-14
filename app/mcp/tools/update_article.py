@@ -7,6 +7,10 @@ the race at S3 (412) re-reads and reports the same way.
 
 Frontmatter, when given, replaces the stored block entirely except for the
 server-maintained ``seq`` (§10.15). Omit it to leave the block alone.
+
+The parent listing is refreshed after **every** successful write, not only when a
+projected field changed: the listing carries the child's ETag (its ``version``, and
+the self-heal comparison key — §8.6), and every write changes that.
 """
 
 from __future__ import annotations
@@ -31,7 +35,9 @@ from app.mcp.tools._common import (
     validate_frontmatter,
     version_arg,
 )
+from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed, StoredObject
+from app.storage.listings import ListingChild, basename
 from app.storage.markdown import parse, serialize
 
 DESCRIPTION = (
@@ -112,6 +118,9 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise _stale(_live(st, s3, path)) from None
     except AccessDenied:
         raise forbidden() from None
+    refresh_parent(
+        ctx, path, ListingChild.article(basename(path), written.etag, len(body), frontmatter)
+    )
     return {"path": path, "version": written.version, "seq": frontmatter["seq"]}
 
 

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}{{ status }} · Wiki{% endblock %}
+{% block content %}
+<h1>{{ status }}</h1>
+<p>{{ message or "That did not work." }}</p>
+{% if request_id %}<p class="muted">Reference: {{ request_id }}</p>{% endif %}
+<p><a href="{{ prefix }}/">Back to the wiki</a></p>
+{% endblock %}

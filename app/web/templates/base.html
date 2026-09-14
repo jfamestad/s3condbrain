@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Wiki{% endblock %}</title>
+<style>
+  :root { --ink:#1b1b1b; --muted:#6b6b6b; --line:#e3e3e3; --accent:#2b5fd9; --bg:#fff; --soft:#f6f6f6; }
+  * { box-sizing:border-box }
+  body { margin:0; font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg) }
+  header { border-bottom:1px solid var(--line); padding:.75rem 1.25rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap }
+  header a { color:var(--ink); text-decoration:none; font-weight:600 }
+  header nav a { font-weight:400; color:var(--muted); margin-right:.9rem }
+  header form { margin-left:auto }
+  main { max-width:860px; margin:0 auto; padding:1.5rem 1.25rem 4rem }
+  a { color:var(--accent) }
+  h1,h2,h3 { line-height:1.25 }
+  .muted { color:var(--muted) }
+  .crumbs a { color:var(--muted) }
+  .crumbs { font-size:.9rem; margin-bottom:1rem }
+  table { border-collapse:collapse; width:100% }
+  th,td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line); vertical-align:top }
+  th { font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted) }
+  .btn { display:inline-block; padding:.45rem .8rem; border:1px solid var(--line); border-radius:6px; background:var(--soft); color:var(--ink); cursor:pointer; font:inherit }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff }
+  .btn.danger { border-color:#c0392b; color:#c0392b; background:#fff }
+  .notice { background:var(--soft); border-left:3px solid var(--accent); padding:.75rem 1rem; margin:1rem 0 }
+  .warn { background:#fff7e6; border-left:3px solid #e0a000; padding:.75rem 1rem; margin:1rem 0 }
+  input[type=text],input[type=email],select,textarea { font:inherit; padding:.45rem .55rem; border:1px solid var(--line); border-radius:6px; width:100%; max-width:32rem }
+  label { display:block; margin:.75rem 0 .25rem; font-weight:600 }
+  article pre { background:var(--soft); padding:.75rem; overflow:auto; border-radius:6px }
+  article code { background:var(--soft); padding:.1rem .3rem; border-radius:4px }
+  article img { max-width:100% }
+  .tag { display:inline-block; background:var(--soft); border-radius:999px; padding:.05rem .6rem; font-size:.8rem; margin-right:.3rem }
+  .trust { font-size:.8rem; padding:.1rem .5rem; border-radius:4px; background:var(--soft) }
+  .trust.human-reviewed { background:#e7f5ea } .trust.machine-confirmed { background:#eef3ff }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem } @media (max-width:640px){ .grid{ grid-template-columns:1fr } }
+  .kv dt { color:var(--muted); font-size:.85rem } .kv dd { margin:0 0 .6rem }
+</style>
+</head>
+<body>
+<header>
+  <a href="{{ prefix }}/">Wiki</a>
+  {% if principal %}
+  <nav>
+    <a href="{{ prefix }}/">Browse</a>
+    <a href="{{ prefix }}/search">Search</a>
+    <a href="{{ prefix }}/admin">Admin</a>
+  </nav>
+  <form method="post" action="{{ prefix }}/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <span class="muted">{{ principal.display_name or principal.email }}</span>
+    <button class="btn" type="submit">Sign out</button>
+  </form>
+  {% endif %}
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

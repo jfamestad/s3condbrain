@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Wiki{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+<p class="muted">You will be sent to the sign-in page, then brought back here. No password: a link is emailed to you.</p>
+<form method="post" action="{{ prefix }}/login">
+  <button class="btn primary" type="submit">Continue</button>
+</form>
+{% endblock %}

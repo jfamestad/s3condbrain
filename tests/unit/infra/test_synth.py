@@ -194,7 +194,10 @@ def test_listing_lifecycle_rule_does_not_undercut_retention(prod: Synth) -> None
 
 
 def test_grant_table_keys_and_index(dev: Synth) -> None:
-    table = _only(dev.storage, "AWS::DynamoDB::Table")["Properties"]
+    tables = _resources(dev.storage, "AWS::DynamoDB::Table")
+    grants = [t for k, t in tables.items() if k.startswith("Grants")]
+    assert len(grants) == 1, sorted(tables)
+    table = grants[0]["Properties"]
     assert table["KeySchema"] == [
         {"AttributeName": "pk", "KeyType": "HASH"},
         {"AttributeName": "sk", "KeyType": "RANGE"},
@@ -217,7 +220,11 @@ def test_grant_table_keys_and_index(dev: Synth) -> None:
 def test_functions_are_arm64_python313(dev: Synth) -> None:
     fns = _resources(dev.compute, "AWS::Lambda::Function")
     handlers = {f["Properties"]["Handler"] for f in fns.values()}
-    assert handlers == {"app.authorizer.handler.handle", "app.mcp.handler.handle"}
+    assert handlers == {
+        "app.authorizer.handler.handle",
+        "app.mcp.handler.handle",
+        "app.web.handler.handle",
+    }
     for fn in fns.values():
         assert fn["Properties"]["Runtime"] == "python3.13"
         assert fn["Properties"]["Architectures"] == ["arm64"]
@@ -287,7 +294,18 @@ def test_mcp_role_has_no_s3_and_is_table_read_only(dev: Synth) -> None:
     assert not [a for a in actions if a.startswith("s3:")], actions
     assert not [a for a in actions if a == "s3:*" or a == "*"], actions
     mutating = {"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:*"}
-    assert not (set(actions) & mutating), actions
+    # The grant table is read-only for this role. The only mutating DynamoDB action it
+    # may hold is UpdateItem on the rate-limit counters table (§12.6), never the grants.
+    grant_table_id = next(k for k in dev.storage["Resources"] if k.startswith("Grants"))
+    for st in _role_statements(dev.compute, role_id):
+        acts = set(_actions(st))
+        if not (acts & mutating):
+            continue
+        assert acts == {"dynamodb:UpdateItem"}, acts
+        assert grant_table_id not in json.dumps(st["Resource"]), st
+        assert "ratelimit" in json.dumps(st["Resource"]).lower() or "RateLimit" in json.dumps(
+            st["Resource"]
+        ), st
     assert not [a for a in actions if a.startswith("dynamodb:Batch") and "Write" in a], actions
     assert "sts:AssumeRole" in actions
     assert {"dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query"} <= set(actions)
@@ -308,11 +326,19 @@ def test_mcp_role_assume_targets_only_storage_role(dev: Synth) -> None:
     assert assume[0]["Resource"] == {"Fn::GetAtt": [storage_role_id, "Arn"]}
 
 
-def test_storage_role_trusts_only_mcp_role(dev: Synth) -> None:
+def test_storage_role_trusts_only_the_two_functions(dev: Synth) -> None:
+    """Assumed by the MCP and web functions' roles and by nothing else — never a
+    person, never a service principal (§8.8)."""
     _, mcp = _function_by_handler(dev.compute, "app.mcp.handler.handle")
+    _, web = _function_by_handler(dev.compute, "app.web.handler.handle")
     storage_role = dev.compute["Resources"][_logical_id(dev.compute_stack, "StorageRole")]
-    [trust] = storage_role["Properties"]["AssumeRolePolicyDocument"]["Statement"]
-    assert trust["Principal"] == {"AWS": {"Fn::GetAtt": [_role_id_of(mcp), "Arn"]}}
+    trust = storage_role["Properties"]["AssumeRolePolicyDocument"]["Statement"]
+    principals = [json.dumps(t["Principal"], sort_keys=True) for t in trust]
+    expected = {
+        json.dumps({"AWS": {"Fn::GetAtt": [_role_id_of(fn), "Arn"]}}, sort_keys=True)
+        for fn in (mcp, web)
+    }
+    assert set(principals) == expected, principals
     assert storage_role["Properties"]["MaxSessionDuration"] == 3600
 
 
@@ -327,7 +353,9 @@ def test_storage_role_outer_bound(dev: Synth) -> None:
         "s3:GetObject",
         "s3:GetObjectVersion",
         "s3:PutObject",
+        "s3:PutObjectTagging",
         "s3:ListBucket",
+        "s3:ListBucketVersions",
         "kms:Decrypt",
         "kms:GenerateDataKey",
         "kms:DescribeKey",
@@ -336,7 +364,12 @@ def test_storage_role_outer_bound(dev: Synth) -> None:
 
     [listing] = [s for s in statements if "s3:ListBucket" in _actions(s)]
     assert listing["Condition"] == {"StringLike": {"s3:prefix": ["a/*"]}}
-    assert _actions(listing) == ["s3:ListBucket"], "ListBucket must not share a statement"
+    assert set(_actions(listing)) == {"s3:ListBucket", "s3:ListBucketVersions"}, (
+        "listing actions must not share a statement with object actions"
+    )
+    [tagging] = [s for s in statements if "s3:PutObjectTagging" in _actions(s)]
+    assert _actions(tagging) == ["s3:PutObjectTagging"]
+    assert "_listing.json" in json.dumps(tagging["Resource"]), "tagging is for listings only"
 
     [objects] = [s for s in statements if "s3:GetObject" in _actions(s)]
     assert json.dumps(objects["Resource"]).endswith('"/a/*"]]}'), objects["Resource"]
@@ -438,16 +471,21 @@ def test_route_table(dev: Synth) -> None:
         ("/mcp", "OPTIONS"),
         ("/.well-known/oauth-protected-resource", "GET"),
         ("/.well-known/oauth-protected-resource/mcp", "GET"),
+        ("/app", "ANY"),
+        ("/app/{proxy+}", "ANY"),
     }
     authorizer_id = next(iter(_resources(dev.api, "AWS::ApiGateway::Authorizer")))
     post = methods[("/mcp", "POST")]
     assert post["AuthorizationType"] == "CUSTOM"
     assert post["AuthorizerId"] == {"Ref": authorizer_id}
     assert post["Integration"]["Type"] == "AWS_PROXY"
+    web_routes = {("/app", "ANY"), ("/app/{proxy+}", "ANY")}
     for key, props in methods.items():
-        if key != ("/mcp", "POST"):
-            assert props["AuthorizationType"] == "NONE", key
-            assert props["Integration"]["Type"] == "MOCK", key
+        if key == ("/mcp", "POST"):
+            continue
+        assert props["AuthorizationType"] == "NONE", key
+        expected_type = "AWS_PROXY" if key in web_routes else "MOCK"
+        assert props["Integration"]["Type"] == expected_type, key
 
 
 def test_mcp_get_and_delete_are_405(dev: Synth) -> None:
@@ -543,3 +581,30 @@ def test_outputs(dev: Synth) -> None:
     assert {"ApiUrl", "CanonicalMcpUrl", "ResourceMetadataUrl", "DomainTarget"} <= set(outputs)
     assert outputs["CanonicalMcpUrl"]["Value"] == "https://wiki-dev.famestad.com/mcp"
     Template.from_stack(dev.api_stack).has_output("ResourceMetadataUrl", Match.object_like({}))
+
+
+# ------------------------------------------------------ storage: rate limits
+
+
+def test_ratelimit_table_ttl_and_encryption(dev: Synth, prod: Synth) -> None:
+    """§12.6 counters: own table, ``ttl`` expiry, same CMK, removal follows cfg."""
+    for synth, deletion in ((dev, "Delete"), (prod, "Retain")):
+        tables = _resources(synth.storage, "AWS::DynamoDB::Table")
+        [(_, resource)] = [(k, t) for k, t in tables.items() if k.startswith("RateLimit")]
+        table = resource["Properties"]
+        assert table["TableName"] == f"wiki-{synth.storage_stack.cfg.name}-ratelimit"
+        assert table["KeySchema"] == [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ]
+        assert table["BillingMode"] == "PAY_PER_REQUEST"
+        assert table["TimeToLiveSpecification"] == {"AttributeName": "ttl", "Enabled": True}
+        key_id = _logical_id(synth.storage_stack, "Key")
+        assert table["SSESpecification"] == {
+            "SSEEnabled": True,
+            "SSEType": "KMS",
+            "KMSMasterKeyId": {"Fn::GetAtt": [key_id, "Arn"]},
+        }
+        assert "PointInTimeRecoverySpecification" not in table
+        assert resource["DeletionPolicy"] == deletion
+    assert "RateLimitTableName" in dev.storage["Outputs"]

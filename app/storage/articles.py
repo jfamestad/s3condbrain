@@ -13,6 +13,8 @@ Object metadata written on every ``PutObject`` (§8.2):
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -119,6 +121,34 @@ def _quoted(etag: str) -> str:
     return etag if etag.startswith('"') else f'"{etag}"'
 
 
+def _encode_cursor(key_marker: str, version_id_marker: str) -> str:
+    """``list_versions`` cursor: URL-safe base64 of ``{"k": key, "v": version_id}``,
+    the two markers ``ListObjectVersions`` resumes from (§10.7 — opaque to callers)."""
+    payload = json.dumps({"k": key_marker, "v": version_id_marker}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str, key: str) -> tuple[str, str]:
+    """Inverse of ``_encode_cursor``; the cursor must have been issued for ``key``.
+
+    Raises:
+        ValueError: on anything that is not a cursor this module issued for ``key``.
+    """
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (ValueError, UnicodeDecodeError) as error:  # binascii.Error is a ValueError
+        raise ValueError("malformed cursor") from error
+    if (
+        not isinstance(payload, dict)
+        or payload.get("k") != key
+        or not isinstance(payload.get("v"), str)
+        or not payload["v"]
+    ):
+        raise ValueError("cursor does not belong to this path")
+    return key, payload["v"]
+
+
 class ArticleStore:
     """Thin, explicit wrapper over the S3 verbs the tools need.
 
@@ -183,8 +213,30 @@ class ArticleStore:
 
     def head_version(self, s3: Any, path: str, version_id: str) -> StoredObject | None:
         """``HeadObject?versionId=`` — metadata for one historical version (§8.3).
-        Increment C implements this."""
-        raise NotImplementedError
+
+        ``None`` on 404 / NoSuchVersion (including a version id that belongs to
+        another key — S3 answers 404 for that too, which is what §10.8 wants).
+
+        Raises:
+            AccessDenied: on 403.
+        """
+        key = key_for(path)
+        try:
+            response = s3.head_object(Bucket=self.bucket, Key=key, VersionId=version_id)
+        except ClientError as error:
+            if _is_not_found(error) or _code(error) in ("NoSuchVersion", "InvalidArgument"):
+                return None
+            if _is_denied(error):
+                raise AccessDenied(path) from error
+            raise
+        return StoredObject(
+            key=key,
+            etag=response["ETag"],
+            size=int(response["ContentLength"]) if "ContentLength" in response else None,
+            version_id=response.get("VersionId"),
+            last_modified=response.get("LastModified"),
+            metadata=dict(response.get("Metadata") or {}),
+        )
 
     def list_versions(
         self, s3: Any, path: str, *, limit: int = 20, cursor: str | None = None
@@ -194,9 +246,62 @@ class ArticleStore:
         Returns ``(entries, next_cursor)``. Entries carry ``version_id``, ``etag``,
         ``size``, ``last_modified`` and **no** metadata — callers ``head_version``
         each entry for actor/kind. Delete markers are ignored (nothing writes them).
-        Increment C implements this.
+
+        ``Prefix=key`` also matches longer keys (``a/x.md`` vs ``a/x.mdx.md``); those
+        sort after every version of the exact key, so the walk stops at the first
+        foreign key and never leaks one of its versions. ``MaxKeys`` counts versions
+        and delete markers together, so a page is followed with S3's own
+        ``NextKeyMarker``/``NextVersionIdMarker`` until ``limit + 1`` versions of the
+        key are in hand (the extra one decides whether a cursor is due), the key
+        runs out, or a foreign key appears.
+
+        Args:
+            limit: Maximum entries to return.
+            cursor: A ``next_cursor`` from a previous call for the same path.
+
+        Raises:
+            ValueError: when ``cursor`` is malformed or was issued for another path.
+            AccessDenied: on 403.
         """
-        raise NotImplementedError
+        key = key_for(path)
+        request: dict[str, Any] = {"Bucket": self.bucket, "Prefix": key, "MaxKeys": limit + 1}
+        if cursor is not None:
+            request["KeyMarker"], request["VersionIdMarker"] = _decode_cursor(cursor, key)
+
+        entries: list[StoredObject] = []
+        try:
+            while True:
+                response = s3.list_object_versions(**request)
+                exhausted = False
+                for item in response.get("Versions") or []:
+                    if item["Key"] != key:
+                        exhausted = True
+                        break
+                    entries.append(
+                        StoredObject(
+                            key=key,
+                            etag=item.get("ETag", ""),
+                            size=int(item.get("Size", 0)),
+                            version_id=item.get("VersionId"),
+                            last_modified=item.get("LastModified"),
+                        )
+                    )
+                    if len(entries) > limit:
+                        exhausted = True
+                        break
+                if exhausted or not response.get("IsTruncated"):
+                    break
+                request["KeyMarker"] = response["NextKeyMarker"]
+                request["VersionIdMarker"] = response["NextVersionIdMarker"]
+        except ClientError as error:
+            if _is_denied(error):
+                raise AccessDenied(path) from error
+            raise
+
+        if len(entries) <= limit:
+            return entries, None
+        entries = entries[:limit]
+        return entries, _encode_cursor(key, entries[-1].version_id or "")
 
     def head(self, s3: Any, path: str) -> StoredObject | None:
         """``HeadObject`` — etag and metadata only; ``None`` on 404.
