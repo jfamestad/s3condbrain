@@ -619,7 +619,14 @@ def test_custom_domain_from_certificate_arn(dev: Synth) -> None:
 def test_certificate_comes_from_ssm_when_no_context_and_no_zone(tmp_path: Path) -> None:
     """The certificate stack is deployed by hand and publishes its ARN to SSM; without
     a ``certificateArn`` override the API resolves that parameter at deploy time."""
-    app = _app("dev", tmp_path)  # no certificateArn context
+    # Build the app WITHOUT the certificateArn context the `_app` helper injects.
+    app = cdk.App(
+        context={
+            "env": "dev",
+            "codeRoot": str(_build_code_root(tmp_path)),
+            "workosWebClientId": "client_test",
+        }
+    )
     build(app)
     api = app.synth().get_stack_by_name("wiki-dev-api").template
     domains = _resources(api, "AWS::ApiGateway::DomainName")
@@ -627,10 +634,12 @@ def test_certificate_comes_from_ssm_when_no_context_and_no_zone(tmp_path: Path) 
     [domain] = domains.values()
     # CDK renders a deploy-time SSM lookup as a CloudFormation parameter of type
     # AWS::SSM::Parameter::Value<String> whose Default is the parameter name.
+    # (CDK's own BootstrapVersion parameter is the same type; keep ours only.)
     ssm_params = {
         k: v
         for k, v in api.get("Parameters", {}).items()
         if v.get("Type") == "AWS::SSM::Parameter::Value<String>"
+        and str(v.get("Default", "")).startswith("/wiki/")
     }
     assert len(ssm_params) == 1, sorted(api.get("Parameters", {}))
     [(param_id, param)] = ssm_params.items()
