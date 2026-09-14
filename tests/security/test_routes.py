@@ -146,3 +146,43 @@ def test_malformed_body_is_400_and_reveals_nothing(http: httpx.Client, token: st
     for needle in ("Traceback", "/var/task", "Exception"):
         assert needle not in body, f"error body reveals {needle!r}"
     assert marker not in body, "§9.3: no request echo"
+
+
+# --- the web application (§11.6) --------------------------------------------------------
+
+
+def test_web_app_root_redirects_to_login_without_session(http: httpx.Client) -> None:
+    """``/app/`` is the human surface: no session → the login page, never content."""
+    r = http.get("/app/")
+    assert r.status_code == 303
+    assert r.headers.get("location", "").startswith("/app/login")
+    assert "set-cookie" not in {k.lower() for k in r.headers}
+
+
+def test_web_login_page_is_public_and_hardened(http: httpx.Client) -> None:
+    r = http.get("/app/login")
+    assert r.status_code == 200
+    assert "Sign in" in r.text
+    csp = r.headers.get("content-security-policy", "")
+    assert "frame-ancestors 'none'" in csp and "script-src 'self'" in csp
+    assert r.headers.get("x-frame-options", "").upper() == "DENY"
+    assert r.headers.get("cache-control") == "no-store"
+
+
+def test_web_admin_without_session_is_redirect_not_content(http: httpx.Client) -> None:
+    for path in ("/app/admin", "/app/admin/people", "/app/admin/grants"):
+        r = http.get(path)
+        assert r.status_code == 303, path
+        assert r.headers.get("location", "").startswith("/app/login"), path
+
+
+def test_web_post_without_session_or_csrf_is_refused(http: httpx.Client) -> None:
+    r = http.post("/app/admin/grants", data={"subject": "x", "node": "/", "permission": "own"})
+    assert r.status_code in (303, 403)
+    assert "granted" not in r.text.lower()
+
+
+def test_web_unknown_path_is_404_page_without_details(http: httpx.Client) -> None:
+    r = http.get("/app/definitely-not-a-route")
+    assert r.status_code == 404
+    assert "Traceback" not in r.text and "/var/task" not in r.text
