@@ -246,7 +246,7 @@ Which makes instance administration fall out cleanly: **an admin is the owner of
 >
 > Because every grant is positional, moving an article re-evaluates who can read it, in both directions. Neither direction is a side effect to be suppressed — the change in access is very often *why* the move is happening.
 >
-> So `move_article` MUST return the full impact before proceeding — who gains access and who loses it — and the agent surfaces that to the person. Nobody loses access silently: the pointer left behind tells them it moved and where, which is the prompt to request access at the new location. Where the access change was incidental rather than intended, the impact report is the moment to carry grants forward *deliberately*, as pending grant requests against the destination (§4.10).
+> So `move_article` MUST compute the full impact before proceeding — who gains access and who loses it. **A move through which anyone *gains* access is refused on the tool surface** (`403 boundary_change`, carrying the report) and is performed in the web application, where a person sees the impact and confirms. Moves that widen nobody's access — within a folder, or narrowing — proceed on the tool surface and return the report. The reasoning is §4.7's: text an agent has read can instruct it, and a move that discloses is the one write that cannot be undone by moving back. Nobody loses access silently either: the pointer left behind tells them it moved and where, which is the prompt to request access at the new location. *(Decided 14 Sep 2026 after review; supersedes "the agent surfaces that to the person".)*
 
 ### 4.7 The admin boundary — structural rule
 
@@ -763,7 +763,7 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
 | `read_version` | `path, version_id, byte_range?` | `wiki.read` | `read` on path |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` |
-| `move_article` | `from, to, if_version` | `wiki.write` | `write` on both |
+| `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; refused with `boundary_change` when anyone would gain access (§4.6) |
 | `archive_article` | `path, if_version` | `wiki.write` | `write` |
 | `unarchive_article` | `path, if_version?` | `wiki.write` | `write` |
 
@@ -1243,9 +1243,9 @@ Errors are returned as MCP tool errors (`isError: true`) with `structuredContent
   "type": "object", "required": ["status", "code", "message"],
   "properties": {
     "status":  { "enum": [400, 403, 404, 409, 429, 500] },
-    "code":    { "enum": ["bad_request", "forbidden", "not_found", "conflict",
-                          "rate_limited", "exists", "archived", "retired_pointer",
-                          "internal"] },
+    "code":    { "enum": ["bad_request", "forbidden", "boundary_change", "not_found",
+                          "conflict", "rate_limited", "exists", "archived",
+                          "retired_pointer", "internal"] },
     "message": { "type": "string",
                  "description": "Written for a person. Says what to do next where
                    there is something to do." },
@@ -1258,6 +1258,7 @@ Errors are returned as MCP tool errors (`isError: true`) with `structuredContent
 | --- | --- | --- |
 | `400` | Malformed input, reserved name, read-only field supplied | Not without changing the request |
 | `403` | Principal lacks the grant | **No.** Ask an owner |
+| `403` + `boundary_change` | The move would give someone access | **No.** Do it in the web application, where the person confirms the impact (`access_changes` is in the envelope) |
 | `404` | No such path — or one the caller may not see | No |
 | `409` | Stale `if_version`, or an occupied destination | Yes, after merging |
 | `429` | Rate limited | After `retry_after` |
@@ -1424,7 +1425,9 @@ Since non-technical people must be able to operate this, **the admin console is 
 
 **Hard delete (decided).** No function holds `s3:DeleteObjectVersion` (§8.8), so the console does not delete. It renders the break-glass runbook for a path — the exact version ids and the commands — and logs that it was viewed. The deletion is performed by a person under the break-glass role in the console. "Exists, logged, rare" is satisfied; "reachable from a function" deliberately is not.
 
-**Adding a person (decided, §15.2 amended).** The console creates the user through the WorkOS management API and sends the AuthKit invitation (WorkOS's email, with a sign-in link); it then shows the owner a block to send on — the connector URL and the click path — rather than running its own mail. Two messages instead of one, and no email infrastructure to secure.
+**Adding a person (decided, §15.2 amended; revised 14 Sep 2026).** The web application holds **no WorkOS management API key.** That key can change any user's email address — an identity takeover of every family member if the function or the secret were compromised — and it would be exercised perhaps four times in the instance's life. Instead the operator creates the person in the WorkOS dashboard (which sends the sign-in invitation); the console's "Add a person" takes the resulting user id and email, writes the PROFILE row and the initial grant, and shows the owner the connector block to send on. The only WorkOS credential any function holds is the web application's own OAuth client secret, which can do nothing but exchange that client's login codes.
+
+**Signing out everywhere (decided 14 Sep 2026).** Each PROFILE row carries a `session_epoch`; a session cookie records the epoch it was issued under, and the per-request PROFILE read (already made for the disabled check) rejects a mismatch. "Sign out everywhere" bumps the epoch. A copied cookie dies the moment its owner asks, not at the 12-hour expiry.
 
 **Pending grant requests (§4.10) are deferred past v1.** Granting stays human-only either way; the agent-proposal path can arrive later without touching the tool surface's security posture.
 
@@ -1664,7 +1667,7 @@ None of these block the skeleton. Tracked so they are not lost.
 Five steps, of which the person performs three.
 
 1. An owner enters the new person's email in the admin console. The system creates them at the authorization server and records a profile plus their initial grants.
-2. They receive the AuthKit invitation email (sign-in link) from WorkOS, and separately the connector URL with the exact click path — the owner copies that block from the console and sends it however the family communicates. (One email was the design; two is the v1 build, because the second would otherwise mean running mail infrastructure.)
+2. They receive the AuthKit invitation email (sign-in link) — sent when the operator creates them in the WorkOS dashboard (§11.6: no function holds the management key) — and separately the connector URL with the exact click path, which the owner copies from the console and sends however the family communicates.
 3. They sign in once in a browser — magic link rather than a password, so nothing has to be chosen, remembered or reset.
 4. They add the connector **on web or desktop** and approve the consent screen. **This step cannot begin on a phone.**
 5. From then on it works everywhere, phone included.

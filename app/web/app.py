@@ -44,7 +44,7 @@ from app.web.oauth import AuthKitClient
 logger = Logger(service="wiki-web")
 
 PREFIX = "/app"
-VIEW_MODULES = ("auth", "read", "admin")
+VIEW_MODULES = ("auth", "read", "admin", "move")
 
 _env = Environment(
     loader=PackageLoader("app.web", "templates"),

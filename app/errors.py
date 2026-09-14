@@ -100,5 +100,11 @@ def retired_pointer(message: str = "This path was vacated by a move and is retir
     return ToolError(409, "retired_pointer", message)
 
 
+def boundary_change(message: str, **extra: Any) -> ToolError:
+    """A move that would give someone access is not an agent action (§4.6, §4.7).
+    Carries the impact report so the agent can explain what the console will do."""
+    return ToolError(403, "boundary_change", message, **extra)
+
+
 def internal(message: str = "The server could not complete the request.") -> ToolError:
     return ToolError(500, "internal", message)
