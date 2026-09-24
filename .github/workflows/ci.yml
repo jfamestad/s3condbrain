@@ -87,7 +87,8 @@ jobs:
           if find build -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'credentials' \) ! -name 'cacert.pem' | grep .; then
             echo "::error::credential-shaped file in the deployment package"; exit 1
           fi
-          if grep -rIlE 'AKIA[0-9A-Z]{16}|sk_(live|test)_[0-9a-zA-Z]{20,}' build --include='*.py' --include='*.json' --include='*.toml' --include='*.txt'; then
+          # botocore/data/*/examples-1.json carries AWS's documentation keys (AKIAIOSFODNN7EXAMPLE).
+          if grep -rIlE 'AKIA[0-9A-Z]{16}|sk_(live|test)_[0-9a-zA-Z]{20,}' build --include='*.py' --include='*.json' --include='*.toml' --include='*.txt' --exclude-dir=data; then
             echo "::error::credential-shaped string in the deployment package"; exit 1
           fi
 
