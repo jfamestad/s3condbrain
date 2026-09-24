@@ -156,6 +156,16 @@ def test_wrong_audience_is_unauthorized(jwks: FakeJWKSClient, rsa_key: RSAPrivat
     _assert_unauthorized(_event(f"Bearer {token}"))
 
 
+def test_multi_valued_audience_is_unauthorized(
+    jwks: FakeJWKSClient, rsa_key: RSAPrivateKey, settings: Settings
+) -> None:
+    # AS-4: aud is the canonical URL byte for byte, never a list containing it.
+    token = _sign(rsa_key, _claims(aud=[settings.canonical_mcp_url, "https://other/mcp"]))
+    _assert_unauthorized(_event(f"Bearer {token}"))
+    token = _sign(rsa_key, _claims(aud=[settings.canonical_mcp_url]))
+    _assert_unauthorized(_event(f"Bearer {token}"))
+
+
 def test_alg_none_is_unauthorized(jwks: FakeJWKSClient) -> None:
     header = _b64url(json.dumps({"alg": "none", "typ": "JWT", "kid": KID}).encode())
     payload = _b64url(json.dumps(_claims()).encode())
@@ -536,7 +546,9 @@ def test_jwks_client_singleton_is_built_from_settings(
     a = handler._get_jwks_client()
     b = handler._get_jwks_client()
     assert a is b
-    assert built == [(settings.jwks_url, {"cache_keys": True})]
+    # No per-key cache: it never expires, so a rotated key would verify for the
+    # container's life. The JWK-set cache (300 s, refresh on unknown kid) is enough.
+    assert built == [(settings.jwks_url, {})]
     assert settings.jwks_url == "https://test.authkit.app/oauth2/jwks"
     handler._reset()
     handler._get_jwks_client()

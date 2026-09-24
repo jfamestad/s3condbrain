@@ -83,7 +83,8 @@ jobs:
         # along. gitleaks (below) covers the history; this covers what ships.
         run: |
           set -euo pipefail
-          if find build -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'credentials' \) | grep .; then
+          # Every wheel ships a CA bundle as cacert.pem; those are public certificates.
+          if find build -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' -o -name 'credentials' \) ! -name 'cacert.pem' | grep .; then
             echo "::error::credential-shaped file in the deployment package"; exit 1
           fi
           if grep -rIlE 'AKIA[0-9A-Z]{16}|sk_(live|test)_[0-9a-zA-Z]{20,}' build --include='*.py' --include='*.json' --include='*.toml' --include='*.txt'; then
@@ -97,11 +98,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Only needed for organisation-owned repositories; personal repos are free.
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+      # gitleaks-action needs a paid licence for organisation repositories; the CLI
+      # image is free and scans the same history.
+      - name: gitleaks (full history)
+        run: >
+          docker run --rm -v "$PWD:/repo" -w /repo
+          ghcr.io/gitleaks/gitleaks:v8.30.1
+          git --redact --no-banner --exit-code 1 .
 
   dependabot-automerge:
     # §12.4: auto-merge for patch and minor releases. Major updates wait for a person.

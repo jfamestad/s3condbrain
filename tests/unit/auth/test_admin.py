@@ -159,7 +159,20 @@ class TestGrantRevoke:
     def test_revoke_missing_row_is_not_an_error(self, seeded: GrantAdmin) -> None:
         seeded.revoke(ALICE, BOB, "/racing/nothing-here.md")
 
-    @pytest.mark.parametrize("bad", ["racing", "", "/racing/../x.md", "/racing//x.md"])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "racing",
+            "",
+            "/racing/../x.md",
+            "/racing//x.md",
+            "/racing*",  # IAM wildcard would widen the session policy
+            "/racing/?.md",
+            "/Racing",
+            "/racing/x.md/y.md",  # ".md" folder segment
+            "/" + "a" * 600,
+        ],
+    )
     def test_bad_node_is_value_error_before_any_guard(self, seeded: GrantAdmin, bad: str) -> None:
         with pytest.raises(ValueError):
             seeded.grant(ROOT, BOB, bad, Permission.READ)

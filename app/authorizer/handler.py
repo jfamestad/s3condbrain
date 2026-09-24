@@ -51,10 +51,15 @@ def _get_settings() -> Settings:
 
 
 def _get_jwks_client() -> jwt.PyJWKClient:
-    """Lazy module-level JWKS client; keys are cached for the container's life."""
+    """Lazy module-level JWKS client.
+
+    The JWK *set* is cached for the library's default lifespan (300 s) and refreshed on
+    an unknown ``kid``. Per-key caching (``cache_keys=True``) is deliberately off: it has
+    no expiry, so a rotated or revoked key would verify for the container's life.
+    """
     global _jwks_client
     if _jwks_client is None:
-        _jwks_client = jwt.PyJWKClient(_get_settings().jwks_url, cache_keys=True)
+        _jwks_client = jwt.PyJWKClient(_get_settings().jwks_url)
     return _jwks_client
 
 
@@ -83,7 +88,9 @@ def validate(token: str, settings: Settings, jwks_client: Any) -> dict[str, Any]
         algorithms=ALGORITHMS,
         issuer=settings.authkit_domain,
         audience=settings.canonical_mcp_url,
-        options={"require": REQUIRED_CLAIMS},
+        # strict_aud: ``aud`` must be the single canonical string, never a list that
+        # merely contains it (AS-4, "byte for byte").
+        options={"require": REQUIRED_CLAIMS, "strict_aud": True},
     )
 
 

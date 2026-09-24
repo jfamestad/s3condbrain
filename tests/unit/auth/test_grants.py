@@ -130,6 +130,14 @@ class TestEffectiveCascade:
         assert effective([g], "/anything/at/all.md").permission is Permission.OWN
         assert effective([g], "/").permission is Permission.OWN
 
+    def test_article_grant_never_cascades_beneath_its_path_string(self) -> None:
+        # A grant on the *article* /racing/x.md must not reach /racing/x.md/y.md even
+        # though "/racing/x.md" is, as a string, an ancestor of it (review 2026-09-24).
+        g = _grant("/racing/x.md", Permission.WRITE)
+        assert effective([g], "/racing/x.md") == Resolution(Permission.WRITE, (g,))
+        assert effective([g], "/racing/x.md/y.md") == Resolution(None, ())
+        assert effective([g], "/racing/x.md/deeper/z.md") == Resolution(None, ())
+
     def test_folder_grant_matches_the_folder_itself(self) -> None:
         g = _grant("/racing", Permission.WRITE)
         assert effective([g], "/racing") == Resolution(Permission.WRITE, (g,))

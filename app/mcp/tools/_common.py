@@ -40,8 +40,13 @@ HUMAN_ACTOR_PREFIX = "human:"
 # §10.2 path grammar
 # ---------------------------------------------------------------------------
 
-ARTICLE_PATH_PATTERN = r"^/(?:[a-z0-9][a-z0-9._-]*/)*[a-z0-9][a-z0-9._-]*\.md$"
-FOLDER_PATH_PATTERN = r"^/$|^/(?:[a-z0-9][a-z0-9._-]*)(?:/[a-z0-9][a-z0-9._-]*)*$"
+# A folder segment is any legal segment that does not end in ".md". Without that
+# exclusion "/x.md/y.md" is a legal article under a folder named "x.md", and because
+# grant resolution walks path strings, a grant on the *article* "/x.md" would then
+# reach everything created beneath it (security review 2026-09-24).
+_FOLDER_SEGMENT = r"(?![a-z0-9._-]*\.md(?:/|$))[a-z0-9][a-z0-9._-]*"
+ARTICLE_PATH_PATTERN = rf"^/(?:{_FOLDER_SEGMENT}/)*[a-z0-9][a-z0-9._-]*\.md$"
+FOLDER_PATH_PATTERN = rf"^/$|^/{_FOLDER_SEGMENT}(?:/{_FOLDER_SEGMENT})*$"
 PATH_MAX_LENGTH = 512  # §10.2; a LIST session policy carries the path twice and must stay < 2 KB
 VERSION_MAX_LENGTH = 256
 SECTION_MAX_LENGTH = 200
@@ -86,7 +91,8 @@ def article_path(value: Any, field: str = "path") -> str:
     if len(value) > PATH_MAX_LENGTH or not _ARTICLE_PATH_RE.match(value):
         raise bad_request(
             f"'{field}' must be an absolute, lowercase article path ending in '.md', "
-            "e.g. '/racing/setup/rear-bar.md'. Segments may not begin with '_'."
+            "e.g. '/racing/setup/rear-bar.md'. Segments may not begin with '_', and "
+            "only the last segment may end in '.md'."
         )
     return value
 
@@ -102,7 +108,7 @@ def folder_path(value: Any, field: str = "path") -> str:
     if len(value) > PATH_MAX_LENGTH or not _FOLDER_PATH_RE.match(value):
         raise bad_request(
             f"'{field}' must be an absolute, lowercase folder path with no trailing "
-            "slash, e.g. '/racing/setup' ('/' is the root)."
+            "slash, e.g. '/racing/setup' ('/' is the root). No segment may end in '.md'."
         )
     return value
 

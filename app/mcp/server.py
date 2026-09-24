@@ -195,7 +195,7 @@ def _parse_body(event: dict[str, Any]) -> Any:
             raise _RpcError(400, PARSE_ERROR, "Parse error") from exc
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
+    except (json.JSONDecodeError, TypeError, RecursionError) as exc:
         raise _RpcError(400, PARSE_ERROR, "Parse error") from exc
 
 
@@ -461,11 +461,18 @@ def _log_call(
 
 def handle(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda entry point for API Gateway REST proxy integration."""
-    settings = _get_settings()
     try:
+        settings = _get_settings()
         return _handle(event, context, settings)
     except HttpError as err:
         return _response(err.status, err.body, err.headers)
+    except Exception as exc:  # noqa: BLE001 — the edge says nothing (§12.3)
+        logger.error(
+            "unhandled",
+            exc_class=type(exc).__name__,
+            request_id=getattr(context, "aws_request_id", None),
+        )
+        return _response(500, {"error": _INTERNAL_ENVELOPE["code"]})
 
 
 def _handle(event: dict[str, Any], context: Any, settings: Settings) -> dict[str, Any]:

@@ -129,6 +129,12 @@ def test_empty_body_is_parse_error() -> None:
     assert body["error"]["code"] == PARSE_ERROR
 
 
+def test_deeply_nested_body_is_parse_error() -> None:
+    status, _, body = call(make_event(raw_body="[" * 200_000 + "]" * 200_000))
+    assert status == 400
+    assert body["error"]["code"] == PARSE_ERROR
+
+
 def test_base64_encoded_body_is_decoded() -> None:
     status, _, body = call(make_event(rpc("ping"), base64_body=True))
     assert status == 200

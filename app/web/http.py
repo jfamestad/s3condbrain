@@ -42,6 +42,7 @@ def content_security_policy(*form_action: str) -> str:
 # is the floor; `handle` replaces it with one naming the authorization server.
 BASE_HEADERS: dict[str, str] = {
     "Content-Security-Policy": content_security_policy(),
+    "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
