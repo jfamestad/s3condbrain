@@ -25,7 +25,7 @@ Reading the diagram: the client never talks to the substrate about identity; it 
 
 **Environments.** Two AWS accounts, not two stacks: `wiki.famestad.com` (prod) and `wiki-dev.famestad.com` (dev, account 588747760390). Each has its own bucket, table, KMS key, canonical resource URI and WorkOS resource-indicator registration. Development data is synthetic; family records never enter the dev account.
 
-**Status, 17 Sep 2026.** Built: skeleton plus increments A–G, 1,275 unit tests, synth-clean for dev and prod; certificate stack hand-deployed. Not deployed: blocked on CIMD being enabled in the WorkOS staging environment and on AWS credentials for the dev account.
+**Status, 17 Sep 2026 (gate updated 23 Sep 2026).** Built: skeleton plus increments A–G, 1,275 unit tests, synth-clean for dev and prod; certificate stack hand-deployed. CIMD is enabled and the HANDOFF §2 gate has run against WorkOS staging: checks 1, 3, 4 and 5 passed, along with the AS-9 token-lifetime check; check 6 (CIMD origin allowlist) does not exist in the WorkOS dashboard, so that control stays a wish; check 7 self-signup is now disabled. Not deployed: blocked on AWS credentials for the dev account, and the authorizer itself is still unwritten.
 
 Source: `HANDOFF.md` in the mcp4me.com repository (13 Sep 2026), the authoritative reference; where this document and it disagree, it wins.
 
@@ -68,7 +68,7 @@ WorkOS answers who is calling; the substrate owns everything downstream of the t
 
 **Resource identity.** Canonical resource `https://wiki.famestad.com/mcp`; that string is the `aud` of every accepted token, byte for byte, and each environment registers its own. Provisioning fails if registration fails. Gate check 4, an unregistered resource being *refused* rather than silently issued against a default audience, is what keeps instances isolated.
 
-**Scopes are the ceiling; grants are the floor.** Two scopes, `wiki.read` and `wiki.write`, coarse and fixed. Path granularity lives in the grant store, never in scope strings. What a token can touch is the intersection of its scopes and the subject's grants.
+**Grants are the only authority.** ADR-0016 withdrew the custom-scope tier `wiki.read` / `wiki.write` once proposed above the grant layer: WorkOS issues scopes only from permissions assigned per-application in its dashboard, and a CIMD-registered client — how Claude registers — has no Scopes section to assign them from. The grant store was always where path granularity lived, and it is now the whole of what a token can touch. `Tool.scope` survives as a read/write classification for the write rate limit; it is not checked.
 
 **Permissions**
 
@@ -173,7 +173,7 @@ API Gateway REST API, regional, with a Lambda REQUEST authorizer in front of a L
 | Function | Does | Role holds |
 | --- | --- | --- |
 | Authorizer (`app/authorizer/`) | Validates the JWT: `PyJWT` with algorithm, issuer, audience and expiry pinned; passes `sub` and `scope` as context; result cache TTL 0 | CloudWatch Logs only |
-| Data plane (`app/mcp/`, `app/auth/`, `app/storage/`) | Transport, `server/discover`, header and origin checks, scope check, the eleven tools; resolves grants; mints credentials | Read-only on the grant table; `sts:AssumeRole` on the storage role; no S3 of its own |
+| Data plane (`app/mcp/`, `app/auth/`, `app/storage/`) | Transport, `server/discover`, header and origin checks, the eleven tools; resolves grants; mints credentials | Read-only on the grant table; `sts:AssumeRole` on the storage role; no S3 of its own |
 | Web application (`app/web/`) | Login and consent via its own confidential AuthKit client (ID token, access token discarded); read view; admin console; audit log; break-glass runbook | Data plane's plus grant-table writes: the only role that can change a grant |
 
 The web app's session is a signed `__Host-` cookie (12 h), checked per request against the PROFILE row so disabling a person takes effect on their next click; a `session_epoch` on the PROFILE makes "sign out everywhere" immediate. It holds no WorkOS management API key: the operator creates people in the WorkOS dashboard, and the console records the resulting id, PROFILE row and initial grant. Markdown renders with HTML disabled.
@@ -221,11 +221,10 @@ Streamable HTTP at `{root}/mcp`, POST-only, no event streams, version negotiated
 | Condition | Level | Response |
 | --- | --- | --- |
 | No or invalid token | HTTP | `401`, `WWW-Authenticate` naming the resource metadata URL |
-| Token lacks the scope | HTTP | `403`, `WWW-Authenticate: Bearer error="insufficient_scope", scope="wiki.write"`; re-authorization will help |
-| Token has the scope, principal lacks the grant | Tool error | Writes: `403 forbidden`, no scope named. Reads and listings: `404`, because a `403` would confirm the path exists |
+| Principal lacks the grant | Tool error | Writes: `403 forbidden`, no scope named. Reads and listings: `404`, because a `403` would confirm the path exists |
 | `if_version` stale | Tool error | `409` with the current version and body |
 
-Step-up re-authorization is something a client does on an HTTP `403` with a challenge; nothing inside a `200` tool result triggers it. Never return `insufficient_scope` for a grant denial: it sends the agent into a re-consent loop for something no consent will grant. Scope errors mean *ask for more*; grant errors mean *no*.
+There is no longer an HTTP-level scope failure (ADR-0016): the only HTTP-before-any-tool-runs response is the `401` above. Every other error is a tool error, reached only after a real tool ran and declined.
 
 **CORS.** claude.ai's MCP requests are expected to originate from Anthropic's infrastructure rather than the browser, so CORS on `/mcp` is insurance rather than the thing that bites; the thing that bites is reachability from Anthropic's egress range. Preflight succeeds without authentication; allowed headers include the MCP set; `WWW-Authenticate` is exposed on ordinary responses and on the gateway `401` itself, set in gateway configuration because a gateway ignores CORS headers returned by the application.
 
@@ -249,7 +248,7 @@ Eleven tools, six reads and five writes; every read is a search or a targeted fe
 
 **Conventions.** Path is identity: absolute, lowercase, `.md`-suffixed; strip the suffix for the OKF concept id. `version` is the ETag, opaque, returned by every read, required by every mutating call as `if_version`, compared verbatim after stripping quotes, never parsed. A read landing on a pointer returns one `forward_reference` and stops. `frontmatter` replaces rather than merges; omit it to leave frontmatter alone. Listings and search return only what the caller may see, never a denial marker.
 
-**Error envelope.** Tool errors are `isError: true` with `structuredContent` carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip. Authentication and scope failures are not in this envelope; they are HTTP.
+**Error envelope.** Tool errors are `isError: true` with `structuredContent` carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip. Authentication failure is not in this envelope; it is HTTP.
 
 | Status | Code | Meaning | Retry? |
 | --- | --- | --- | --- |
@@ -261,7 +260,7 @@ Eleven tools, six reads and five writes; every read is a search or a targeted fe
 | `429` | `rate_limited` | Per-subject limit | After `retry_after` |
 | `500` | `internal` | Storage or minting failure; body says nothing more | Once, then stop |
 
-**Judgment calls already made** (HANDOFF §10.15): unreadable paths are `404` on every read tool and `403` on writes; paths cap at 512 characters to keep a `list` session policy under STS's 2 KB inline limit; lowercase is rejected rather than normalized; bodies cap at 1 MiB; create at an archived path is refused; `if_version` is optional on unarchive; one hop per read; article grants are searchable, not listable; actor lives in object metadata, not frontmatter; scope errors are HTTP, everything else is a tool error; `resolve_reference` needs no scope; search matches metadata, not bodies; `move_article` carries a `history_note` because the per-path history rule surprises people exactly once.
+**Judgment calls already made** (HANDOFF §10.15): unreadable paths are `404` on every read tool and `403` on writes; paths cap at 512 characters to keep a `list` session policy under STS's 2 KB inline limit; lowercase is rejected rather than normalized; bodies cap at 1 MiB; create at an archived path is refused; `if_version` is optional on unarchive; one hop per read; article grants are searchable, not listable; actor lives in object metadata, not frontmatter; authentication failure is HTTP, everything else is a tool error; `resolve_reference` needs no scope; search matches metadata, not bodies; `move_article` carries a `history_note` because the per-path history rule surprises people exactly once.
 
 ## Security properties
 
@@ -291,7 +290,7 @@ The primary adversary is the internet-wide scanner; the interesting half of the 
 | Untrusted content from foreign instances | Treated as data; no server-side fetch |
 | SSRF through client-metadata fetch | WorkOS's egress allowlisting plus a CIMD trust policy restricting client origins to Claude's |
 | Over-broad delegation by a subtree owner | Grants record their granter; unowned grants surface for review |
-| Re-consent loops from misused error codes | Scope errors and grant errors kept distinct |
+| Re-consent loops from misused error codes | Moot since ADR-0016: there is no `insufficient_scope` any more for a grant denial to be mistaken for |
 
 **Operator posture.** Authentication terminates at the gateway, in a managed authorizer, before any application code. Token validation pins algorithm, issuer, audience and expiry. No secrets in files: function roles for AWS, a managed secret store for the web app's OAuth client secret (the only secret in v1), push protection on. S3 and DynamoDB answer only to this account's roles: account-level public-access block, bucket and table resource policies denying every other principal, no IAM user naming either. Least-privilege roles with no wildcards and no long-lived keys. Patching automated. Errors say nothing.
 

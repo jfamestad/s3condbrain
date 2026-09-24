@@ -17,7 +17,7 @@ budget) → `wiki-<env>-ops` (trail, alerts, alarms, break-glass role, backups).
 
 Once per environment, in this order, ticking as you go. Each item links to the
 section that explains it; the sections below stay the reference. `dev` all the way
-through before `prod` starts. Items 1, 2 and 5 exist because §9.6 puts the two
+through before `prod` starts. Items 1, 2 and 6 exist because §9.6 puts the two
 environments in separate accounts, and a deploy that lands in the wrong one is the
 failure this list is for.
 
@@ -32,37 +32,42 @@ failure this list is for.
       `credentials resolve to account X but infra/config.py pins Y for env Z`.
 - [ ] **3. AuthKit domain and web client id filled in.** `authkit_domain` and
       `workos_web_client_id` in `infra/config.py` for this env ([§3](#3-infraconfigpy);
-      the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 7). An
+      the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 9). An
       empty client id is a synth warning in dev and a synth **error** in prod.
-- [ ] **4. Certificate, by hand (never CI).** `make cert-deploy ENV=<env>`; it pauses
+- [ ] **4. Magic Auth on, password login off.** WorkOS defaults to Email +
+      Password enabled and Magic Auth disabled; the web app's login page promises a
+      passwordless emailed link (§15.2 step 3), so an environment left on the
+      default shows a password prompt at first login instead, with nothing in the
+      UI explaining why ([§5](#5-workos-the-authorization-server) step 8).
+- [ ] **5. Certificate, by hand (never CI).** `make cert-deploy ENV=<env>`; it pauses
       at "waiting for validation" — run `make cert-status ENV=<env>` in another shell,
       add the CNAME it prints at your DNS provider, and the deploy completes when ACM
       sees it (minutes to an hour). The ARN lands in SSM at
       `/wiki/<env>/certificate-arn` and the API stack reads it at deploy time, so
       `CERT_ARN=` is not needed. Renewals are automatic while the CNAME stays
       ([Certificate](#certificate)).
-- [ ] **5. `make synth ENV=<env>`** succeeds, and the
+- [ ] **6. `make synth ENV=<env>`** succeeds, and the
       `wiki: env=<env> account=<id> region=us-west-2` line it prints shows the account
       from step 1 ([§4](#4-deploy)).
-- [ ] **6. `make deploy ENV=<env>`**, with `-c alertEmail=` for prod;
+- [ ] **7. `make deploy ENV=<env>`**, with `-c alertEmail=` for prod;
       confirm the SNS subscription from the email ([§4](#4-deploy)).
-- [ ] **7. DNS.** CNAME or ALIAS from the hostname to the api stack's `DomainTarget`;
+- [ ] **8. DNS.** CNAME or ALIAS from the hostname to the api stack's `DomainTarget`;
       the metadata URL answers ([§2](#2-domain-and-certificate), [§4](#4-deploy)).
-- [ ] **8. Secret filled.** `client_secret` replaced in the secret at `WebSecretArn`
-      ([§5](#5-workos-the-authorization-server) step 7). It is the only WorkOS
+- [ ] **9. Secret filled.** `client_secret` replaced in the secret at `WebSecretArn`
+      ([§5](#5-workos-the-authorization-server) step 9). It is the only WorkOS
       credential any function holds; there is no management API key to fill.
-- [ ] **9. Gate script passed** — `GATE PASSED`, check 4 included. Keep the `sub` from
-      the token it decodes; step 10 needs it ([§5](#5-workos-the-authorization-server)
-      step 5).
-- [ ] **10. `make grant-owner`** with that subject ([§6](#6-first-owner)).
-- [ ] **11. `make aws-tests`** — the §11.3 step 3 negative tests: a minted credential
+- [ ] **10. Gate script passed** — `GATE PASSED`, check 4 included. Keep the `sub` from
+      the token it decodes; step 11 needs it ([§5](#5-workos-the-authorization-server)
+      step 6).
+- [ ] **11. `make grant-owner`** with that subject ([§6](#6-first-owner)).
+- [ ] **12. `make aws-tests`** — the §11.3 step 3 negative tests: a minted credential
       must be refused by AWS outside its prefix, not by our code. Needs this account's
       credentials and the storage stack outputs exported as `WIKI_BUCKET`,
       `STORAGE_ROLE_ARN`, `KMS_KEY_ARN` ([§4](#4-deploy) outputs table). A skip is
       not a pass.
-- [ ] **12. `make security`** against the deployed instance, no skips
+- [ ] **13. `make security`** against the deployed instance, no skips
       ([§8](#8-make-security--the-128-checklist)).
-- [ ] **13. Restore rehearsal done and dated** in `docs/RUNBOOK.md` §7 "Record"
+- [ ] **14. Restore rehearsal done and dated** in `docs/RUNBOOK.md` §7 "Record"
       ([§8](#8-make-security--the-128-checklist) item 7). The §12.8 checklist is not
       complete until that row exists.
 
@@ -141,7 +146,7 @@ Per environment in `ENVIRONMENTS`:
 | `object_lock` | `False` | `True` (§8.2 — decided before the first prod deploy; see §8 below) |
 | `retain_data` | `False` | `True` |
 | `allowed_origins` | `("https://claude.ai",)` | same |
-| `workos_web_client_id` | the web app's AuthKit client id (§5 step 7) | same — empty is a synth **error** in prod, a warning in dev; `-c workosWebClientId=` overrides for one command |
+| `workos_web_client_id` | the web app's AuthKit client id (§5 step 9) | same — empty is a synth **error** in prod, a warning in dev; `-c workosWebClientId=` overrides for one command |
 | `strict_mcp_headers` | `False` | `False` until a real client is seen sending the `Mcp-*` headers (checklist, post-launch item) |
 | `log_retention_days` | 90 | 90 (§12.7) |
 | `backup_retention_days` | 35 | 35 |
@@ -172,7 +177,7 @@ make deploy ENV=dev CERT_ARN=arn:aws:acm:us-west-2:<account>:certificate/<id>
 
 `make synth ENV=<env> CERT_ARN=...` is the dry run: the same build and synthesis
 with no deploy, printing `wiki: env=<env> account=<id> region=<region>` on the way
-so the account can be read against `aws sts get-caller-identity` (checklist step 5).
+so the account can be read against `aws sts get-caller-identity` (checklist step 6).
 `make deploy` runs `make build` (packages both functions for arm64 / Python 3.13),
 then `cdk deploy --all`. To attach an email to the alerts topic and the budget in the
 same deploy, add the context on the CDK command directly:
@@ -208,9 +213,19 @@ decide whether WorkOS is acceptable at all (§2). In order:
 3. Connect → Configuration: add `CanonicalMcpUrl` (exactly, byte for byte) as a
    **resource indicator** and make it the default. Dev and prod are registered
    separately, each in its own WorkOS environment (AS-7).
-4. Create a public OAuth client for the gate script with redirect URI
-   `http://127.0.0.1:8765/callback`.
-5. Run the gate:
+4. Create the gate script's client under **Connect → Applications → Create
+   application → "OAuth application"**, with **Use PKCE** ticked — that is what
+   makes it a public client — and redirect URI `http://127.0.0.1:8765/callback`.
+   Do not create it from the top-level **Applications** nav item: that produces a
+   `client_id` the `/oauth2/*` endpoints reject with `error=application_not_found`.
+5. **Custom scopes are not used (ADR-0016).** `wiki.read` / `wiki.write` were once
+   proposed here as a coarse tier above the grant layer; withdrawn as unimplementable
+   — WorkOS issues scopes only from permissions assigned per-application, and a
+   client registered by Client ID Metadata Document (how the gate script, and
+   Claude, register) is read-only there, no Scopes section to assign from. Request
+   `openid profile email` (plus `offline_access` where a refresh token is wanted);
+   there is nothing to create or assign on this page.
+6. Run the gate:
 
    ```sh
    uv run python scripts/oauth_gate.py \
@@ -222,9 +237,17 @@ decide whether WorkOS is acceptable at all (§2). In order:
    Check 4 (a token for an **unregistered** resource must be refused) decides
    whether the design proceeds. If it issues a token, stop; §2 says what replaces
    WorkOS.
-6. Disable self-signup for the environment (§2 check 7) and restrict CIMD origins if
-   the dashboard allows it (check 6).
-7. **The web application's own client.** In WorkOS create a second OAuth client —
+7. Disable self-signup at **Authentication → Features → Sign-up → Manage** (§2
+   check 7) and restrict CIMD origins if the dashboard allows it (check 6) — as of
+   this writing WorkOS offers no such allowlist, so that row of §4.9 is a wish
+   rather than a control.
+8. **Authentication → Methods → Magic Auth → Enable**, then **Authentication →
+   Methods → Email + Password → Manage → Enable off → Save changes**. WorkOS
+   defaults to the opposite — Email + Password on, Magic Auth off — but the web
+   app's login page promises a passwordless emailed link (§15.2 step 3); left on
+   the default, the dashboard shows a password prompt instead and the first login
+   fails with no explanation.
+9. **The web application's own client.** In WorkOS create a second OAuth client —
    confidential, authorization code + PKCE, redirect URI exactly
    `https://<domain>/app/callback`. Put its client id in `infra/config.py`
    (`workos_web_client_id`). After `make deploy`, open the secret named by the
@@ -313,7 +336,7 @@ contract, copied from `tests/security/README.md`:
 | --- | --- | --- |
 | `WIKI_BASE_URL` | every HTTP test | Instance origin, no trailing slash — e.g. `https://wiki-dev.famestad.com`. Must be `https`. |
 | `WIKI_TEST_TOKEN` | tokens, zero-grant, item 8 | A live access token for the **bootstrap owner** (`own` on `/`), obtained through the §2 flow. |
-| `WIKI_TEST_TOKEN_NOGRANTS` | zero-grant | A live token for a **second user who holds zero grants**. Same AuthKit environment, same scopes. |
+| `WIKI_TEST_TOKEN_NOGRANTS` | zero-grant | A live token for a **second user who holds zero grants**. Same AuthKit environment; no particular scope is required (ADR-0016 withdrew custom scopes). |
 | `WIKI_TEST_TOKEN_WRONG_AUD` | tokens (optional) | A genuine AuthKit token issued for a **different** resource indicator. Skipped when unset. |
 | `WIKI_TEST_TOKEN_EXPIRED` | tokens (optional) | A once-valid token for this instance whose `exp` has passed. Skipped when unset. |
 | `WIKI_TEST_BUCKET` | storage isolation | The instance's bucket name (`BucketName` output). |

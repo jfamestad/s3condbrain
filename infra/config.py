@@ -74,6 +74,9 @@ ENVIRONMENTS: dict[str, EnvConfig] = {
         authkit_domain="https://spirited-smile-45-staging.authkit.app",
         object_lock=False,
         retain_data=False,
+        # The web application's own Connect OAuth client (confidential); its secret
+        # lives in the WebSecret, never here. docs/DEPLOY.md §5.
+        workos_web_client_id="client_01M38Q8YE22B8MYCS1VWEN5MH4",
         strict_mcp_headers=False,
     ),
     "prod": EnvConfig(

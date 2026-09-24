@@ -1,6 +1,6 @@
 # Wiki Substrate — Engineering Handoff
 
-**Instance:** `wiki.famestad.com` · **Date:** 13 September 2026 · **Status:** v1 built (skeleton + increments A–G, 1,002 unit tests, synth-clean for dev and prod); **deployment blocked on the §2 gate** (CIMD not yet enabled in WorkOS) and an AWS development account
+**Instance:** `wiki.famestad.com` · **Date:** 13 September 2026 · **Status:** v1 built (skeleton + increments A–G, 1,002 unit tests, synth-clean for dev and prod); **the §2 gate passed** against WorkOS staging on 23 September 2026 (checks 1, 3 and 4, plus the AS-9 token-lifetime check; check 5 was later retired the same day, see below and §6.5 — it tested a client type no user has; check 6 is unavailable in the WorkOS dashboard — see §2 note below; check 7 self-signup is now disabled) — **deployment remains blocked on an AWS development account**, and the authorizer itself is still unwritten
 
 A deployable knowledge server: one permissioned, versioned tree of markdown articles per organization, managed by agents, reachable as a remote MCP server. What an instance is *for* is decided by what gets put in it.
 
@@ -56,14 +56,14 @@ Hundreds of articles today; nothing in the design forecloses ten thousand. First
 
 ## 2. Start here — the blocking gate
 
-**Nothing else in this document should begin until these checks pass.** They take about half an hour against a free WorkOS staging environment, and `scripts/oauth_gate.py` runs checks 1, 3, 4 and 5 as one command (two browser rounds) and prints reminders for the rest. Checks 1–4 are the gate proper and the fourth one can reverse the entire authorization decision; checks 5–7 confirm assumptions the rest of the design leans on. Run them against the **development** instance URL (§9.6) — production is registered separately at increment G.
+**Nothing else in this document should begin until these checks pass.** They take about half an hour against a free WorkOS staging environment, and `scripts/oauth_gate.py` runs checks 1, 3 and 4 as one command (two browser rounds) and prints reminders for the rest. Checks 1–4 are the gate proper and the fourth one can reverse the entire authorization decision; checks 6 and 7 confirm assumptions the rest of the design leans on; check 5 is retired (below). Run them against the **development** instance URL (§9.6) — production is registered separately at increment G.
 
 1. **Metadata.** Fetch the AuthKit authorization-server metadata. Confirm it advertises **both** `client_id_metadata_document_supported: true` **and** `none` in `token_endpoint_auth_methods_supported`. Claude requires both to select CIMD; with either missing it silently falls back to hunting for a registration endpoint.
 2. **Registration.** Register `https://wiki-dev.famestad.com/mcp` as a resource indicator.
 3. **Round trip.** Complete an authorization-code + PKCE flow with `resource=https://wiki-dev.famestad.com/mcp`. Decode the access token. `aud` MUST be exactly that string.
 4. **Negative case.** Request a token for a resource URI that was **not** registered. It MUST be **refused**.
-5. **Scopes.** The token from check 3 carries `wiki.read` and `wiki.write` in its `scope` claim. §6.5 depends on custom scopes being issued, not merely configured.
-6. **CIMD allowlist.** The dashboard can restrict which client-metadata origins are accepted. If it cannot, §4.9's last row is a wish rather than a control — note it and continue.
+5. **Scopes — retired (ADR-0016, 23 September 2026).** Used to require the token from check 3 to carry `wiki.read` and `wiki.write`. Withdrawn: WorkOS issues scopes only from permissions assigned per-application in its dashboard, and a client registered by Client ID Metadata Document — how Claude registers, and what AS-8 requires — is read-only there, with no Scopes section to assign them from. Verified by reproducing Claude's real authorization request: `scope=wiki.read wiki.write` returns `error=invalid_scope`, while `openid profile email` proceeds. This check tested a client type no user has; see §6.5.
+6. **CIMD allowlist.** The dashboard can restrict which client-metadata origins are accepted. **Checked 23 September 2026: it cannot** — the MCP Auth dialog offers only Dynamic Client Registration and Client ID Metadata Document, no origin allowlist — so §4.9's last row is a wish rather than a control, not a gap in configuration.
 7. **Self-signup.** AuthKit self-registration can be disabled for the environment. Default deny (§3.3) covers the substrate either way, but a stranger should not be able to obtain a valid token and a working, empty connector.
 
 ### Why check 4 decides it
@@ -397,16 +397,15 @@ Where a gateway handles CORS itself it typically **ignores CORS headers returned
 
 ### 6.5 Error semantics
 
+**ADR-0016 (23 September 2026) withdraws the custom-scope tier.** `wiki.read` / `wiki.write` were advertised as a coarse ceiling above the grant layer; this is unimplementable, not merely undone. WorkOS issues scopes only from permissions assigned per-application in its dashboard, and a client registered by Client ID Metadata Document — how Claude registers, and what AS-8 requires — is read-only there: no Scopes section exists on it, every edit control disabled. Verified by reproducing Claude's real authorization request: `scope=wiki.read wiki.write` returns `error=invalid_scope`, while `openid profile email` proceeds normally. There is no environment-level default-scope setting in WorkOS either. The grant layer (§3.3 default-deny) was always the real authority and is unaffected; the `aud` binding §2 check 4 protects is independent of scopes. `Tool.scope` (§10.2) still exists — it now classifies a tool as read or write for the write rate limit, and documents its nature; the transport no longer checks it.
+
 | Condition | Level | Response |
 | --- | --- | --- |
 | No token, or invalid token | HTTP | `401` with `WWW-Authenticate` naming the resource metadata URL |
-| Token lacks the required **scope** | **HTTP** | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="wiki.write"` — re-authorization will help |
-| Token has the scope, principal lacks the **grant** | Tool error | Writes: `403 forbidden`, plain authorization denial, no scope named. Reads and listings: `404`, because a `403` would confirm the path exists (§10.1) |
+| Principal lacks the **grant** | Tool error | Writes: `403 forbidden`, plain authorization denial, no scope named. Reads and listings: `404`, because a `403` would confirm the path exists (§10.1) |
 | `if_version` stale | Tool error | `409` with the current version and body |
 
-**Two levels, deliberately.** The first two rows are HTTP responses emitted before any tool runs; step-up re-authorization is something a client does on an HTTP `403` with a `WWW-Authenticate` challenge, and nothing inside a `200` tool result will trigger it. Every other error is an MCP tool error (`isError: true`, §10.14) — the call reached the tool and the tool declined. In v1 both scopes are advertised in the resource metadata and requested together at consent, so the scope row is correct but idle; it is the grant row that carries the privacy weight.
-
-> **Never conflate rows two and three.** Clients are directed to answer `insufficient_scope` by attempting step-up re-authorization. Returning it for an ACL denial sends the agent into a re-consent loop for something no amount of consent will ever grant. **Scope errors mean *ask for more*; grant errors mean *no*.**
+**Two levels, deliberately.** The first row is an HTTP response emitted before any tool runs. Every other error is an MCP tool error (`isError: true`, §10.14) — the call reached the tool and the tool declined; there is no longer an HTTP-level step between them, since there is no scope to fail on.
 
 ---
 
@@ -1636,6 +1635,7 @@ None of these block the skeleton. Tracked so they are not lost.
 *Retired by the post-review decisions:* the `s3:prefix` condition (now written into §8.5 and tested at step 3), the listing rebuild trigger (lazy, conditional write — §8.6), the pointer chain depth (no server-side traversal — §5.3), the Object Lock retention period (one year — §8.9), and article-grant discoverability (searchable by path filter, not listable — §4.6, §8.7).
 | `O-3` AuthKit consent screen behaviour | What identity it shows for CIMD clients, whether it displays the `client_id` URL host rather than the self-asserted `client_name`, and whether it warns on loopback redirect URIs. **This is the anti-phishing surface**, now WorkOS's to get right rather than ours. | Before increment E |
 | `O-4` Measured revocation latency | End to end, including the credential cache. Confirm token lifetime and refresh configurability against AS-9. | Before increment E |
+| `O-6` `offline_access` and refresh tokens | Empirically (gate run, 23 Sep 2026), WorkOS issues a refresh token only when `offline_access` is in the requested scope; the gate script now requests it, but whether the authorizer should require or even accept refresh tokens from real MCP clients — and whether Claude's own connector flow requests `offline_access` — is undecided. Not fixed in app/ or infra/ yet. | Before writing the authorizer |
 | `O-5` Anthropic's published egress range | A hardcoded CIDR in a deployment prerequisite is exactly the kind of fact that goes stale without anyone noticing. Verify before AS-11 is treated as normative. | Increment G |
 | `O-2` Logto open-source parity | For CIMD and RFC 8707, before treating it as the product-phase hedge. | Post-v1 |
 | `O-1` Authorization server for the productized configuration | Each customer provisions their own WorkOS account; or the product abandons self-deployment for a hosted multi-tenant offering; or it ships the shim-as-authorization-server design with Cognito or Logto behind it. An investment and go-to-market question as much as an architectural one. | Post-v1 |

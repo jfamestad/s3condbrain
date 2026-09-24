@@ -43,5 +43,6 @@ touch it. Where code and document disagree, fix the code.
 3. `infra/config.py`: `authkit_domain`, `domain`, `workos_web_client_id`.
 
 Then `make deploy`, point DNS at the `DomainTarget` output, fill the web secret
-(`WebSecretArn` output) with the AuthKit client secret and WorkOS API key,
+(`WebSecretArn` output) with the AuthKit client's `client_secret` — the only
+WorkOS credential any function holds; there is no management API key to fill —
 `make grant-owner SUBJECT=user_... TABLE=...`, and add the connector in Claude.
