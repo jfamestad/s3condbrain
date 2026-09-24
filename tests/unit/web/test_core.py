@@ -67,6 +67,7 @@ def test_response_carries_security_headers() -> None:
     assert "frame-ancestors 'none'" in h["Content-Security-Policy"]
     assert h["X-Frame-Options"] == "DENY"
     assert h["Cache-Control"] == "no-store"
+    assert h["Strict-Transport-Security"].startswith("max-age=")
 
 
 def test_csp_form_action_names_the_authorization_server() -> None:

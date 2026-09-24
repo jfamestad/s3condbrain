@@ -685,6 +685,14 @@ def test_outputs(dev: Synth) -> None:
 # ------------------------------------------------------ storage: rate limits
 
 
+def test_grant_table_deletion_protection_where_data_is_retained(dev: Synth, prod: Synth) -> None:
+    """A direct DeleteTable is refused in prod; dev stays destroyable."""
+    for synth, protected in ((dev, False), (prod, True)):
+        tables = _resources(synth.storage, "AWS::DynamoDB::Table")
+        [table] = [t["Properties"] for k, t in tables.items() if k.startswith("Grants")]
+        assert table.get("DeletionProtectionEnabled", False) is protected
+
+
 def test_ratelimit_table_ttl_and_encryption(dev: Synth, prod: Synth) -> None:
     """§12.6 counters: own table, ``ttl`` expiry, same CMK, removal follows cfg."""
     for synth, deletion in ((dev, "Delete"), (prod, "Retain")):

@@ -31,6 +31,7 @@ grant rows use for "who can reach this node", so nothing here scans except
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,7 @@ from botocore.exceptions import ClientError
 
 from app.auth.grants import GrantStore, ancestors
 from app.auth.types import Grant, Permission
+from app.mcp.tools._common import ARTICLE_PATH_PATTERN, FOLDER_PATH_PATTERN, PATH_MAX_LENGTH
 
 logger = Logger(service="wiki-admin")
 
@@ -81,9 +83,24 @@ def _check_status(status: str) -> None:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}: {status!r}")
 
 
+_NODE_RES = (re.compile(FOLDER_PATH_PATTERN), re.compile(ARTICLE_PATH_PATTERN))
+
+
 def _normalise_node(node: str) -> str:
-    """Validate an absolute path and drop a trailing slash. Raises ``ValueError``."""
-    return ancestors(node)[-1]
+    """Validate a node against the §10.2 path grammar and drop a trailing slash.
+
+    The node is interpolated into an IAM session policy by ``credentials.py``; the
+    grammar keeps IAM wildcards and over-long strings out of it regardless of caller.
+
+    Raises:
+        ValueError: when the node is not an absolute wiki path.
+    """
+    if len(node) > PATH_MAX_LENGTH:
+        raise ValueError(f"node is longer than {PATH_MAX_LENGTH} characters")
+    normalised = ancestors(node)[-1]
+    if not any(r.match(normalised) for r in _NODE_RES):
+        raise ValueError(f"node is not a wiki path (§10.2 grammar): {node!r}")
+    return normalised
 
 
 def _grant_from_item(item: dict[str, Any]) -> Grant:

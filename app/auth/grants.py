@@ -83,7 +83,13 @@ def effective(grants: Iterable[Grant], path: str) -> Resolution:
         grant, ``Resolution(None, ())``.
     """
     nodes = set(ancestors(path))
-    used = sorted((g for g in grants if g.node in nodes), key=lambda g: len(g.node))
+    # An article grant reaches that one article only. The path grammar no longer
+    # admits ".md" folder segments, but the resolver enforces the invariant itself so
+    # a grant row written by any other route cannot cascade.
+    used = sorted(
+        (g for g in grants if g.node in nodes and (g.node == path or not g.is_article)),
+        key=lambda g: len(g.node),
+    )
     if not used:
         return Resolution(None, ())
     strongest = max(used, key=lambda g: g.permission.rank).permission

@@ -110,6 +110,7 @@ def test_reserved_name_is_400(ctx: ToolContext, minter: FakeMinter, path: str) -
         "/racing//x.md",
         "/racing/../x.md",
         "/racing/x.md/",
+        "/racing/x.md/y.md",  # ".md" folder segment: would let an article grant cascade
         "/",
         "",
         None,

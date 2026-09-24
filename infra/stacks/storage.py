@@ -137,6 +137,9 @@ class StorageStack(cdk.Stack):
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True
             ),
+            # RETAIN only guards a CloudFormation delete; this guards a direct
+            # DeleteTable by any principal. Off in dev so `make destroy` still works.
+            deletion_protection=self.cfg.retain_data,
             removal_policy=self._removal,
         )
         table.add_global_secondary_index(
