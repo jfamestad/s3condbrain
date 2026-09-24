@@ -17,12 +17,31 @@ from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any
 
-# Security headers on every response (HANDOFF §4.9 framing rule, §12.3).
-BASE_HEADERS: dict[str, str] = {
-    "Content-Security-Policy": (
+
+def content_security_policy(*form_action: str) -> str:
+    """The CSP carried by every response (HANDOFF §4.9, §12.3).
+
+    Args:
+        form_action: Origins beyond ``'self'`` that a form may be submitted to. The
+            authorization server belongs here: the sign-in POST answers with a
+            redirect to AuthKit, and ``form-action`` is enforced against the
+            *redirect target*, not only the form's action. Without it the browser
+            drops the submission silently — no request, no console error.
+
+    Returns:
+        The header value.
+    """
+    allowed = " ".join(("'self'", *form_action))
+    return (
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
-    ),
+        f"script-src 'self'; frame-ancestors 'none'; form-action {allowed}; base-uri 'none'"
+    )
+
+
+# Security headers on every response (HANDOFF §4.9 framing rule, §12.3). The CSP here
+# is the floor; `handle` replaces it with one naming the authorization server.
+BASE_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": content_security_policy(),
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",

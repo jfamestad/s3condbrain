@@ -13,7 +13,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.config import Settings
 from app.web import app as web_app
 from app.web import session as sess
-from app.web.http import HttpError, Request, Response, Router, html, set_cookie
+from app.web.http import (
+    HttpError,
+    Request,
+    Response,
+    Router,
+    content_security_policy,
+    html,
+    set_cookie,
+)
 from app.web.oauth import AuthKitClient
 from app.web.render import render, sections
 from tests.unit.web.conftest import SESSION_KEY, SUBJECT, call, csrf_for, event
@@ -59,6 +67,22 @@ def test_response_carries_security_headers() -> None:
     assert "frame-ancestors 'none'" in h["Content-Security-Policy"]
     assert h["X-Frame-Options"] == "DENY"
     assert h["Cache-Control"] == "no-store"
+
+
+def test_csp_form_action_names_the_authorization_server() -> None:
+    """The sign-in POST is answered with a redirect to AuthKit, and `form-action` is
+    enforced against the redirect target. Omitting the authorization server makes the
+    browser drop the submission with no request and no console error — the login
+    button simply does nothing."""
+    authkit = "https://example-staging.authkit.app"
+    policy = content_security_policy(authkit)
+    assert f"form-action 'self' {authkit};" in policy
+    # Everything else stays exactly as strict as before.
+    assert "default-src 'self';" in policy
+    assert "frame-ancestors 'none';" in policy
+    assert "base-uri 'none'" in policy
+    # The bare policy is still self-only, so nothing widens by accident.
+    assert "form-action 'self';" in content_security_policy()
 
 
 # --- session ----------------------------------------------------------------------------

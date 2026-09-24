@@ -35,6 +35,7 @@ from app.web.http import (
     Response,
     Router,
     clear_cookie,
+    content_security_policy,
     html,
     redirect,
     set_cookie,
@@ -294,6 +295,12 @@ def handle(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "web_unhandled", request_id=request.request_id, exc_class=type(exc).__name__
         )
         response = error_page(request, 500, "Something went wrong. It has been logged.")
+    # The sign-in POST is answered with a redirect to AuthKit, and `form-action` is
+    # checked against that target — so the authorization server has to be named here
+    # or the browser drops the submission without a word (§4.9).
+    response.headers.setdefault(
+        "Content-Security-Policy", content_security_policy(settings().authkit_domain)
+    )
     return response.to_event()
 
 
