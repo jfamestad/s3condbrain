@@ -275,7 +275,7 @@ def test_function_environment(dev: Synth) -> None:
         "MCP_PROTOCOL_VERSION",
     }
     assert mcp_env["MCP_STRICT_HEADERS"] == ("true" if load("dev").strict_mcp_headers else "false")
-    assert mcp_env["MCP_PROTOCOL_VERSION"] == "2026-07-28"
+    assert mcp_env["MCP_PROTOCOL_VERSION"] == "2025-06-18"
     assert mcp_env["CREDENTIAL_CACHE_SECONDS"] == "900"
     assert mcp_env["ALLOWED_ORIGINS"] == "https://claude.ai"
     storage_role_id = _logical_id(dev.compute_stack, "StorageRole")
@@ -296,23 +296,34 @@ def _annotations(stack: cdk.Stack, type_: str) -> list[str]:
     return [str(m.data) for c in stack.node.find_all() for m in c.node.metadata if m.type == type_]
 
 
-def test_missing_web_client_id_warns_in_dev_and_errors_in_prod(dev: Synth, prod: Synth) -> None:
-    """An empty WORKOS_CLIENT_ID never deploys silently; prod does not deploy at all."""
-    assert load("dev").workos_web_client_id == "" and load("prod").workos_web_client_id == ""
-    for synth in (dev, prod):
+def test_missing_web_client_id_warns_in_dev_and_errors_in_prod(tmp_path: Path) -> None:
+    """An empty WORKOS_CLIENT_ID never deploys silently; prod does not deploy at all.
+
+    Dev now carries a real client id in `infra/config.py`, so the missing case is
+    constructed here rather than borrowed from the shipped config — otherwise filling
+    the id in would quietly delete this test's coverage.
+    """
+    synths = {
+        name: _synth(
+            name,
+            _build_code_root(tmp_path / name),
+            cfg=replace(load(name), workos_web_client_id=""),
+        )
+        for name in ("dev", "prod")
+    }
+    for synth in synths.values():
         _, web = _function_by_handler(synth.compute, "app.web.handler.handle")
         assert web["Properties"]["Environment"]["Variables"]["WORKOS_CLIENT_ID"] == ""
 
-    dev_warnings = _annotations(dev.compute_stack, "aws:cdk:warning")
-    dev_errors = _annotations(dev.compute_stack, "aws:cdk:error")
+    dev_warnings = _annotations(synths["dev"].compute_stack, "aws:cdk:warning")
+    dev_errors = _annotations(synths["dev"].compute_stack, "aws:cdk:error")
     assert any("workosWebClientId" in w for w in dev_warnings), dev_warnings
     assert not any("workosWebClientId" in e for e in dev_errors)
 
-    prod_errors = _annotations(prod.compute_stack, "aws:cdk:error")
+    prod_stack = synths["prod"].compute_stack
+    prod_errors = _annotations(prod_stack, "aws:cdk:error")
     assert any("workosWebClientId" in e for e in prod_errors), prod_errors
-    assert not any(
-        "workosWebClientId" in w for w in _annotations(prod.compute_stack, "aws:cdk:warning")
-    )
+    assert not any("workosWebClientId" in w for w in _annotations(prod_stack, "aws:cdk:warning"))
 
 
 def test_web_client_id_from_config_or_context_is_silent(tmp_path: Path) -> None:
@@ -477,7 +488,7 @@ def test_gateway_responses(dev: Synth) -> None:
     assert unauthorized["ResponseParameters"] == {
         "gatewayresponse.header.WWW-Authenticate": (
             "'Bearer resource_metadata=\"https://wiki-dev.famestad.com"
-            '/.well-known/oauth-protected-resource/mcp", scope="wiki.read"\''
+            "/.well-known/oauth-protected-resource/mcp\"'"
         ),
         "gatewayresponse.header.Access-Control-Allow-Origin": "'https://claude.ai'",
         "gatewayresponse.header.Access-Control-Expose-Headers": "'WWW-Authenticate'",
@@ -588,7 +599,6 @@ def test_protected_resource_metadata_documents(dev: Synth) -> None:
     expected = {
         "resource": "https://wiki-dev.famestad.com/mcp",
         "authorization_servers": [load("dev").authkit_domain],
-        "scopes_supported": ["wiki.read", "wiki.write"],
         "bearer_methods_supported": ["header"],
     }
     for path in (

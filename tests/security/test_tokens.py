@@ -138,8 +138,6 @@ def test_token_issuer_is_advertised_authorization_server(
     assert iss.rstrip("/") == metadata["authorization_servers"][0].rstrip("/")
 
 
-def test_token_carries_both_scopes(token: str) -> None:
-    """§2 check 5 — custom scopes are *issued*, not merely configured."""
-    scope = _unverified_claims(token).get("scope", "")
-    scopes = set(scope.split()) if isinstance(scope, str) else set(scope)
-    assert set(ALL_SCOPES) <= scopes, f"scope claim: {scope!r}"
+# §2 check 5 (the token's scope claim carries both custom scopes) is retired —
+# ADR-0016: WorkOS cannot issue scopes to a CIMD client, so the check tested a
+# client type no user has. `aud` and `iss` above are the assertions that matter.

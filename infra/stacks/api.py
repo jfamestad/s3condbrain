@@ -32,7 +32,8 @@ Without a domain the stage URL is output and CANONICAL_MCP_URL must be provided.
 
 Protected resource metadata body (AS-2):
     {"resource": "<canonical>", "authorization_servers": ["<authkit>"],
-     "scopes_supported": ["wiki.read", "wiki.write"], "bearer_methods_supported": ["header"]}
+     "bearer_methods_supported": ["header"]}
+    No `scopes_supported` (ADR-0016 — custom scopes withdrawn, HANDOFF §6.5).
 
 Outputs: ApiUrl, CanonicalMcpUrl, ResourceMetadataUrl, DomainTarget (custom domain only).
 """
@@ -40,6 +41,7 @@ Outputs: ApiUrl, CanonicalMcpUrl, ResourceMetadataUrl, DomainTarget (custom doma
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import Duration
@@ -68,7 +70,6 @@ CORS_ALLOW_HEADERS = [
     "mcp-name",
     "mcp-param-*",
 ]
-SCOPES_SUPPORTED = ["wiki.read", "wiki.write"]
 
 
 def _quoted(value: str) -> str:
@@ -144,8 +145,16 @@ class ApiStack(cdk.Stack):
 
     # ----------------------------------------------------- gateway responses
 
+    def _challenge(self) -> str:
+        """The `WWW-Authenticate` value on a 401 (AS-3).
+
+        No `scope`: ADR-0016 withdrew the custom scopes, and advertising one the
+        authorization server cannot grant sends the client back for `invalid_scope`.
+        """
+        return f'Bearer resource_metadata="{self.resource_metadata_url}"'
+
     def _add_gateway_responses(self) -> None:
-        challenge = f'Bearer resource_metadata="{self.resource_metadata_url}", scope="wiki.read"'
+        challenge = self._challenge()
         self.api.add_gateway_response(
             "Unauthorized",
             type=apigateway.ResponseType.UNAUTHORIZED,
@@ -228,13 +237,20 @@ class ApiStack(cdk.Stack):
             "ANY", integration, authorization_type=apigateway.AuthorizationType.NONE
         )
 
-    def _add_metadata_routes(self) -> None:
-        body = {
+    def _metadata_body(self) -> dict[str, Any]:
+        """The RFC 9728 protected-resource document.
+
+        No `scopes_supported`: ADR-0016 withdrew the custom scopes, so no client is
+        invited to request one that cannot be granted.
+        """
+        return {
             "resource": self.canonical_mcp_url,
             "authorization_servers": [self.cfg.authkit_domain.rstrip("/")],
-            "scopes_supported": SCOPES_SUPPORTED,
             "bearer_methods_supported": ["header"],
         }
+
+    def _add_metadata_routes(self) -> None:
+        body = self._metadata_body()
         integration = apigateway.MockIntegration(
             request_templates={"application/json": '{"statusCode": 200}'},
             passthrough_behavior=apigateway.PassthroughBehavior.NEVER,

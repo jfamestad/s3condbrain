@@ -41,7 +41,10 @@ from infra.stacks.storage import StorageStack
 
 PLACEHOLDER_CANONICAL_URL = "https://SET-CANONICAL-MCP-URL/mcp"
 METADATA_PATH = "/.well-known/oauth-protected-resource"
-MCP_PROTOCOL_VERSION = "2026-07-28"
+# The revision we advertise as preferred. Claude's client rejects 2026-07-28 outright
+# ("Server's protocol version is not supported"), so advertising it makes the server
+# unusable by the only client there is. 2025-06-18 is what clients actually speak.
+MCP_PROTOCOL_VERSION = "2025-06-18"
 PLACEHOLDER_CODE = "def handle(e, c): raise RuntimeError('not built')"
 
 

@@ -11,14 +11,16 @@ Responsibilities, in order, per POST:
    Values may arrive base64-sentinel encoded (``=?base64?…?=``) — decode first.
 5. Dispatch: ``server/discover``, ``initialize`` (compat), ``notifications/initialized``
    (202, empty), ``ping``, ``tools/list``, ``tools/call``. Unknown → 404, ``-32601``.
-6. For ``tools/call``: required scope check → ``InsufficientScope`` (HTTP 403).
-   Then the handler. ``ToolError`` → result with ``isError: true`` and
-   ``structuredContent`` = envelope. Any other exception → ``isError`` 500 envelope,
-   logged with the request id, body says nothing more (§12.3).
+6. For ``tools/call``: the handler runs directly — custom scopes are not an
+   authorization input (ADR-0016; the grant layer alone decides, §3.3). ``ToolError``
+   → result with ``isError: true`` and ``structuredContent`` = envelope. Any other
+   exception → ``isError`` 500 envelope, logged with the request id, body says
+   nothing more (§12.3).
 
 Identity: ``event["requestContext"]["authorizer"]["sub"]`` and ``["scope"]`` (space
-separated), placed there by the authorizer. Missing → 401 challenge (defensive; the
-gateway should never route an unauthenticated POST here).
+separated), placed there by the authorizer. Missing ``sub`` → 401 challenge
+(defensive; the gateway should never route an unauthenticated POST here). A missing
+or empty ``scope`` is not an error — it is an empty set (ADR-0016).
 
 One structured log line per tool call (§12.7): request_id · subject · tool · path ·
 decision · status · grants_used · duration_ms · bytes.
@@ -38,8 +40,8 @@ from aws_lambda_powertools import Logger
 from app.auth.credentials import CredentialMinter
 from app.auth.grants import GrantStore
 from app.auth.ratelimit import RateLimiter
-from app.config import SCOPE_READ, SCOPE_WRITE, Settings
-from app.errors import HttpError, InsufficientScope, ToolError
+from app.config import SCOPE_WRITE, Settings
+from app.errors import HttpError, ToolError
 from app.mcp import tools as tools_pkg
 from app.mcp.protocol import (
     H_METHOD,
@@ -306,9 +308,8 @@ def _tools_call(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     if tool is None:
         raise _RpcError(200, INVALID_PARAMS, "Invalid params: unknown tool", {"name": name})
 
-    if tool.scope is not None and tool.scope not in ctx.scopes:
-        raise InsufficientScope(tool.scope, ctx.settings.resource_metadata_url)
-
+    # No scope gate here (ADR-0016): the grant layer is the only authority (§3.3).
+    # ``tool.scope`` still classifies read vs write for the rate limiter below.
     try:
         if ctx.limiter is not None:
             ctx.limiter.check(ctx.subject, is_write=tool.scope == SCOPE_WRITE)
@@ -383,18 +384,23 @@ def build_context(event: dict[str, Any], settings: Settings) -> ToolContext:
     """Construct a ``ToolContext`` from the authorizer context and module-level
     singletons (GrantStore, CredentialMinter) that persist across warm invocations.
 
+    A missing or non-string ``scope`` is not a rejection — it is an empty set of
+    scopes (ADR-0016: custom scopes are no longer an authorization input, so there
+    is nothing to require). ``sub`` is unaffected and stays strict.
+
     Raises:
-        HttpError: 401 with the discovery challenge when the authorizer context is
-            absent or incomplete.
+        HttpError: 401 with the discovery challenge when ``sub`` is absent or empty.
     """
     auth = (event.get("requestContext") or {}).get("authorizer") or {}
     sub = auth.get("sub")
     scope = auth.get("scope")
-    if not isinstance(sub, str) or not sub or not isinstance(scope, str):
-        challenge = (
-            f'Bearer resource_metadata="{settings.resource_metadata_url}", scope="{SCOPE_READ}"'
-        )
+    if not isinstance(sub, str) or not sub:
+        # No `scope=`: advertising a scope the authorization server cannot grant sends
+        # the client back for `invalid_scope` (ADR-0016). Matches the gateway challenge.
+        challenge = f'Bearer resource_metadata="{settings.resource_metadata_url}"'
         raise HttpError(401, {"error": "unauthorized"}, {"WWW-Authenticate": challenge})
+    if not isinstance(scope, str):
+        scope = ""
     return ToolContext(
         subject=sub,
         scopes=frozenset(scope.split()),

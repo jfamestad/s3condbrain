@@ -3,7 +3,8 @@
 Two levels, deliberately (HANDOFF §6.5, §10.14):
 
 * ``HttpError`` — emitted by the transport *before* any tool runs. Authentication
-  is the gateway's (401); scope failure is ours (403 + ``insufficient_scope``).
+  only (401); there is no scope level any more (ADR-0016 withdrew custom scopes —
+  the grant layer, §3.3, was always the real authority).
 * ``ToolError`` — an MCP tool error (``isError: true``) with ``structuredContent``
   matching the §10.14 envelope. Grant denials, conflicts, not-found, bad input.
 """
@@ -29,22 +30,6 @@ class HttpError(Exception):
         self.status = status
         self.body = body if body is not None else {"error": "request refused"}
         self.headers = headers or {}
-
-
-class InsufficientScope(HttpError):
-    """HTTP 403 with the RFC 6750 ``insufficient_scope`` challenge (§6.5 row 2)."""
-
-    def __init__(self, required_scope: str, resource_metadata_url: str) -> None:
-        challenge = (
-            f'Bearer error="insufficient_scope", scope="{required_scope}", '
-            f'resource_metadata="{resource_metadata_url}"'
-        )
-        super().__init__(
-            403,
-            {"error": "insufficient_scope", "required_scope": required_scope},
-            {"WWW-Authenticate": challenge},
-        )
-        self.required_scope = required_scope
 
 
 class ToolError(Exception):

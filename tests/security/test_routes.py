@@ -12,8 +12,6 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from app.config import ALL_SCOPES
-
 pytestmark = pytest.mark.security
 
 Call = Callable[..., httpx.Response]
@@ -50,8 +48,8 @@ def test_metadata_document(http: httpx.Client, base_url: str, path: str) -> None
     assert len(servers) == 1, "AS-2: the AuthKit domain is the first *and only* entry"
     assert servers[0].startswith("https://"), servers
 
-    scopes = document.get("scopes_supported", [])
-    assert set(ALL_SCOPES) <= set(scopes), f"scopes_supported missing a scope: {scopes}"
+    # ADR-0016: custom scopes are withdrawn — nothing advertised here any more.
+    assert "scopes_supported" not in document, document
 
 
 def test_both_metadata_documents_agree(http: httpx.Client) -> None:
@@ -100,7 +98,8 @@ def test_post_without_token_is_401_challenge(
     challenge = _header(response, "www-authenticate")
     assert challenge.startswith("Bearer"), challenge
     assert f'resource_metadata="{metadata_url}"' in challenge, challenge
-    assert "scope=" in challenge, "AS-3: the challenge carries an explicit minimal scope"
+    # ADR-0016: the gateway challenge no longer names a scope — there is none to ask for.
+    assert "scope=" not in challenge, challenge
 
     # §9.3: the CORS headers must be on the gateway response itself.
     exposed = _header(response, "access-control-expose-headers").lower()
@@ -137,7 +136,7 @@ def test_malformed_body_is_400_and_reveals_nothing(http: httpx.Client, token: st
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "MCP-Protocol-Version": "2026-07-28",
+            "MCP-Protocol-Version": "2025-06-18",
             "Mcp-Method": "ping",
         },
     )

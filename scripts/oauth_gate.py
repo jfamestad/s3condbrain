@@ -11,11 +11,13 @@ It performs, in order:
   1. Metadata      — CIMD advertised, `none` in token auth methods, S256 PKCE.
   3. Round trip    — authorization-code + PKCE with `resource=`; decodes the token;
                      `aud` must equal the resource byte for byte.
-  5. Scopes        — the token's scope claim carries wiki.read and wiki.write.
   4. Negative      — the same flow with an UNREGISTERED resource; must be refused.
                      (Runs last because it needs a second browser round.)
 
-Checks 2, 6 and 7 are dashboard facts; the script prints reminders for them.
+Checks 2, 6 and 7 are dashboard facts; the script prints reminders for them. Check 5
+(scopes) is retired: ADR-0016 withdrew custom scopes — a CIMD client cannot be
+granted scopes, so the check tested a client type no user has. The token's scope
+claim is still printed, for information.
 
 The redirect URI is http://127.0.0.1:<port>/callback — register it on the client
 exactly. A public client needs no secret; pass --client-secret only if the dashboard
@@ -38,8 +40,6 @@ from dataclasses import dataclass, field
 
 import httpx
 import jwt
-
-REQUIRED_SCOPES = ("wiki.read", "wiki.write")
 
 
 @dataclass
@@ -93,8 +93,14 @@ def _authorize(
     scope: str,
     port: int,
     timeout: int,
-) -> tuple[dict | None, str]:
-    """Run one authorization-code flow. Returns (token_response, refusal_reason)."""
+) -> tuple[dict | None, str, bool]:
+    """Run one authorization-code flow. Returns (token_response, detail, refused).
+
+    ``refused`` is True only when the authorization server actively refused the
+    request — an ``error`` at /authorize, or a non-200 at /token. A timeout, a
+    state mismatch, or a missing code are inconclusive: no request was rejected,
+    none was ever completed either. Callers must not treat those as a refusal.
+    """
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(24)
     redirect_uri = f"http://127.0.0.1:{port}/callback"
@@ -116,19 +122,19 @@ def _authorize(
         print(f"  if it does not open, visit:\n  {url}\n")
         webbrowser.open(url)
         if not cb.event.wait(timeout):
-            return None, "timed out waiting for the browser callback"
+            return None, "timed out waiting for the browser callback", False
     finally:
         server.shutdown()
 
     if "error" in cb.params:
         err = cb.params.get("error")
         desc = cb.params.get("error_description", "")
-        return None, f"refused at /authorize: {err} {desc}".strip()
+        return None, f"refused at /authorize: {err} {desc}".strip(), True
     if cb.params.get("state") != state:
-        return None, "state mismatch at callback — treat as refused"
+        return None, "state mismatch at callback — treat as refused", False
     code = cb.params.get("code")
     if not code:
-        return None, "no code in callback"
+        return None, "no code in callback", False
 
     data = {
         "grant_type": "authorization_code",
@@ -142,8 +148,8 @@ def _authorize(
         data["client_secret"] = client_secret
     r = httpx.post(meta["token_endpoint"], data=data, timeout=20)
     if r.status_code != 200:
-        return None, f"refused at /token: HTTP {r.status_code} {r.text[:300]}"
-    return r.json(), ""
+        return None, f"refused at /token: HTTP {r.status_code} {r.text[:300]}", True
+    return r.json(), "", False
 
 
 def main() -> int:
@@ -159,7 +165,12 @@ def main() -> int:
         default="https://not-registered.invalid/mcp",
         help="a resource you did NOT register (check 4)",
     )
-    p.add_argument("--scope", default=" ".join(REQUIRED_SCOPES))
+    p.add_argument(
+        "--scope",
+        default="openid profile email offline_access",
+        help="requested scope string; offline_access is included by default so "
+        "AS-9's refresh-token check has something to assert on",
+    )
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--timeout", type=int, default=180)
     p.add_argument("--skip-negative", action="store_true")
@@ -209,8 +220,8 @@ def main() -> int:
     print(f"jwks_uri               {meta.get('jwks_uri')}")
     print(f"scopes_supported       {meta.get('scopes_supported')}")
 
-    # ---- 3 + 5. round trip -------------------------------------------------------
-    tok, why = _authorize(
+    # ---- 3. round trip -------------------------------------------------------------
+    tok, why, _ = _authorize(
         meta, a.client_id, a.client_secret, a.resource, a.scope, a.port, a.timeout
     )
     if tok is None:
@@ -247,13 +258,7 @@ def main() -> int:
         )
         scope_claim = claims.get("scope") or claims.get("scp") or tok.get("scope") or ""
         scopes = set(scope_claim.split()) if isinstance(scope_claim, str) else set(scope_claim)
-        results.append(
-            Result(
-                "5 scopes: token carries wiki.read and wiki.write",
-                set(REQUIRED_SCOPES) <= scopes,
-                f"scope={sorted(scopes)}",
-            )
-        )
+        print(f"scope claim            {sorted(scopes)}  (informational — check 5 is retired)")
         lifetime = int(claims.get("exp", 0)) - int(claims.get("iat", time.time()))
         results.append(
             Result(
@@ -279,11 +284,20 @@ def main() -> int:
             Result("4 negative: unregistered resource refused", False, "skipped (--skip-negative)")
         )
     else:
-        tok2, why2 = _authorize(
+        tok2, why2, refused2 = _authorize(
             meta, a.client_id, a.client_secret, a.unregistered_resource, a.scope, a.port, a.timeout
         )
-        if tok2 is None:
+        if tok2 is None and refused2:
             results.append(Result("4 negative: unregistered resource refused", True, why2))
+        elif tok2 is None:
+            results.append(
+                Result(
+                    "4 negative: unregistered resource refused",
+                    False,
+                    f"inconclusive: {why2} — no refusal was observed and no token "
+                    "request completed. This is not a pass; re-run the gate.",
+                )
+            )
         else:
             try:
                 aud2 = jwt.decode(

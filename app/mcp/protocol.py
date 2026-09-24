@@ -54,8 +54,8 @@ class ToolContext:
 
     Attributes:
         subject: Token ``sub``.
-        scopes: Scopes carried by the token (already checked by the transport for
-            this tool's required scope; tools do not re-check scope).
+        scopes: Scopes carried by the token, if any. Not an authorization input
+            (ADR-0016 withdrew custom scopes); carried through for logging only.
         grants: Grant store (read-only role).
         minter: Credential minter — the only way to obtain an S3 client.
         settings: Runtime settings.
@@ -108,8 +108,10 @@ class Tool:
         input_schema: JSON Schema with ``$defs`` **inlined** (§10.1 — clients do not
             resolve cross-document refs).
         output_schema: JSON Schema for ``structuredContent`` on success, or ``None``.
-        scope: Required scope (``wiki.read`` / ``wiki.write``) or ``None`` for
-            ``resolve_reference``.
+        scope: The tool's read/write classification (``wiki.read`` / ``wiki.write``),
+            or ``None`` for ``resolve_reference``. Not enforced by the transport —
+            custom scopes were withdrawn (ADR-0016) — but drives the write rate
+            limit and documents each tool's nature.
         handler: ``(ctx, arguments) -> structured result``. Raises ``ToolError`` on
             any §10.14 outcome; never returns an error shape.
     """

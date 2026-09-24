@@ -26,7 +26,7 @@ import boto3
 import httpx
 import pytest
 
-PROTOCOL_VERSION = "2026-07-28"
+PROTOCOL_VERSION = "2025-06-18"
 METADATA_PATH = "/.well-known/oauth-protected-resource/mcp"
 MCP_PATH = "/mcp"
 HTTP_TIMEOUT_SECONDS = 20.0

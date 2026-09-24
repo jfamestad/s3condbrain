@@ -52,7 +52,9 @@ class Settings:
     allowed_origins: tuple[str, ...] = field(default=("https://claude.ai",))
     credential_cache_seconds: int = 900
     strict_mcp_headers: bool = False
-    protocol_version: str = "2026-07-28"
+    # 2025-06-18, not 2026-07-28: Claude's client refuses the latter outright. The
+    # deployed value comes from MCP_PROTOCOL_VERSION (infra/stacks/compute.py).
+    protocol_version: str = "2025-06-18"
     log_level: str = "INFO"
     # Increment D — rate limits (§12.6). Empty table name → no-op limiter.
     ratelimit_table: str = ""
@@ -89,7 +91,7 @@ class Settings:
             allowed_origins=origins,
             credential_cache_seconds=int(os.environ.get("CREDENTIAL_CACHE_SECONDS") or "900"),
             strict_mcp_headers=os.environ.get("MCP_STRICT_HEADERS", "false").lower() == "true",
-            protocol_version=os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28"),
+            protocol_version=os.environ.get("MCP_PROTOCOL_VERSION", "2025-06-18"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
             ratelimit_table=os.environ.get("RATELIMIT_TABLE", ""),
             calls_per_minute=int(os.environ.get("CALLS_PER_MINUTE") or "60"),

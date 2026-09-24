@@ -23,7 +23,7 @@ from app.mcp.protocol import (
 from tests.unit.mcp.conftest import REQUEST_ID, SUB, call, make_event, rpc, sentinel
 
 TOOL_CALL_HEADERS = {
-    "MCP-Protocol-Version": "2026-07-28",
+    "MCP-Protocol-Version": "2025-06-18",
     "Mcp-Method": "tools/call",
     "Mcp-Name": "echo",
 }
@@ -81,15 +81,19 @@ def test_missing_authorizer_context_is_401_with_challenge(settings: Settings) ->
     challenge = headers["WWW-Authenticate"]
     assert challenge.startswith("Bearer ")
     assert f'resource_metadata="{settings.resource_metadata_url}"' in challenge
-    assert 'scope="wiki.read"' in challenge
+    # No `scope=` (ADR-0016): the authorization server cannot grant custom scopes to a
+    # CIMD-registered client, so advertising one sends the client back for
+    # `invalid_scope`. Must match the gateway's challenge in infra/stacks/api.py.
+    assert "scope=" not in challenge
     assert body == {"error": "unauthorized"}
 
 
 @pytest.mark.parametrize(
     "authorizer",
-    [{"scope": "wiki.read"}, {"sub": "", "scope": "wiki.read"}, {"sub": "u"}],
+    [{"scope": "wiki.read"}, {"sub": "", "scope": "wiki.read"}],
 )
 def test_incomplete_authorizer_context_is_401(authorizer: dict) -> None:
+    """``sub`` absent or empty is still a strict 401 (ADR-0016 only relaxed scope)."""
     status, headers, _ = call(make_event(rpc("ping"), authorizer=authorizer))
     assert status == 401
     assert "resource_metadata=" in headers["WWW-Authenticate"]
@@ -97,6 +101,13 @@ def test_incomplete_authorizer_context_is_401(authorizer: dict) -> None:
 
 def test_empty_scope_is_accepted_as_identity() -> None:
     status, _, body = call(make_event(rpc("ping"), authorizer={"sub": SUB, "scope": ""}))
+    assert status == 200
+    assert body["result"] == {}
+
+
+def test_missing_scope_claim_is_accepted_as_identity() -> None:
+    """ADR-0016: no ``scope`` key at all is an empty set, not a rejection."""
+    status, _, body = call(make_event(rpc("ping"), authorizer={"sub": SUB}))
     assert status == 200
     assert body["result"] == {}
 
@@ -178,7 +189,7 @@ def test_unsupported_protocol_version_header_is_mismatch() -> None:
     assert body["error"]["code"] == HEADER_MISMATCH
 
 
-@pytest.mark.parametrize("version", ["2026-07-28", "2025-06-18", "2025-03-26"])
+@pytest.mark.parametrize("version", ["2025-06-18", "2025-03-26"])
 def test_supported_protocol_versions_pass(version: str) -> None:
     status, _, _ = call(make_event(rpc("ping"), headers={"MCP-Protocol-Version": version}))
     assert status == 200
@@ -194,7 +205,7 @@ def test_base64_sentinel_header_decodes_before_comparison() -> None:
     headers = {
         "Mcp-Method": sentinel("tools/call"),
         "Mcp-Name": sentinel("echo"),
-        "MCP-Protocol-Version": sentinel("2026-07-28"),
+        "MCP-Protocol-Version": sentinel("2025-06-18"),
     }
     status, _, body = call(_tools_call("echo", headers=headers))
     assert status == 200
@@ -231,7 +242,7 @@ def test_strict_mode_missing_headers_is_400(monkeypatch: pytest.MonkeyPatch) -> 
 def test_strict_mode_missing_name_on_tools_call_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_STRICT_HEADERS", "true")
     server._reset()
-    headers = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"}
+    headers = {"MCP-Protocol-Version": "2025-06-18", "Mcp-Method": "tools/call"}
     status, _, body = call(_tools_call("echo", headers=headers))
     assert status == 400
     assert body["error"]["code"] == HEADER_MISMATCH
@@ -243,7 +254,7 @@ def test_strict_mode_with_all_headers_passes(monkeypatch: pytest.MonkeyPatch) ->
     status, _, _ = call(_tools_call("echo", headers=TOOL_CALL_HEADERS))
     assert status == 200
     # mcp-name not required on non-call methods even in strict mode
-    headers = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "ping"}
+    headers = {"MCP-Protocol-Version": "2025-06-18", "Mcp-Method": "ping"}
     status, _, _ = call(make_event(rpc("ping"), headers=headers))
     assert status == 200
 
@@ -374,23 +385,24 @@ def test_bad_tools_call_params_is_invalid_params(params: dict) -> None:
     assert body["error"]["code"] == INVALID_PARAMS
 
 
-def test_missing_scope_is_http_403_with_challenge(settings: Settings) -> None:
-    ev = _tools_call("boom_grant", authorizer={"sub": SUB, "scope": "wiki.read"})
-    status, headers, body = call(ev)
-    assert status == 403
-    challenge = headers["WWW-Authenticate"]
-    assert 'error="insufficient_scope"' in challenge
-    assert 'scope="wiki.write"' in challenge
-    assert settings.resource_metadata_url in challenge
-    assert body["error"] == "insufficient_scope"
-    assert "jsonrpc" not in body
+def test_no_custom_scope_succeeds_when_grant_allows() -> None:
+    """ADR-0016: custom scopes are withdrawn. A token carrying none at all still
+    reaches a tool the grant layer would allow."""
+    ev = _tools_call("echo", {"path": "/racing/x.md"}, authorizer={"sub": SUB, "scope": ""})
+    status, _, body = call(ev)
+    assert status == 200
+    assert body["result"]["isError"] is False
 
 
-def test_scope_check_precedes_handler() -> None:
-    # crash requires wiki.read; without it the handler must not run at all
-    ev = _tools_call("crash", authorizer={"sub": SUB, "scope": ""})
-    status, _, _ = call(ev)
-    assert status == 403
+def test_no_custom_scope_still_refused_without_grant() -> None:
+    """Same token, a tool the grant layer denies — proving the grant layer alone
+    does the work now; there is no scope gate left that could have caught this."""
+    ev = _tools_call("boom_grant", {"path": "/p"}, authorizer={"sub": SUB, "scope": ""})
+    status, _, body = call(ev)
+    assert status == 200
+    result = body["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["code"] == "forbidden"
 
 
 def test_unexpected_exception_is_500_envelope_and_says_nothing() -> None:
@@ -486,8 +498,8 @@ def test_log_line_on_grant_denial(log_lines) -> None:
     assert line["status"] == 403
 
 
-def test_log_line_on_scope_denial(log_lines) -> None:
-    call(_tools_call("boom_grant", {"from": "/old"}, authorizer={"sub": SUB, "scope": "wiki.read"}))
+def test_log_line_uses_from_when_path_is_absent(log_lines) -> None:
+    call(_tools_call("boom_grant", {"from": "/old"}))
     line = [ln for ln in log_lines() if ln.get("tool")][0]
     assert line["decision"] == "deny"
     assert line["status"] == 403

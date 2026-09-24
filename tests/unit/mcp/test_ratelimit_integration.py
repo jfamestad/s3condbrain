@@ -1,9 +1,9 @@
 """Increment D — the rate limiter at the transport boundary (HANDOFF §12.6, §10.14).
 
 Two layers. With a stubbed limiter: the 429 envelope, the audit line, and the
-ordering (scope check → limiter → handler). With the real ``RateLimiter`` over a
-moto table: ``_get_limiter`` wires the settings through and the third call of a
-two-per-minute subject comes back 429.
+ordering (limiter → handler; ADR-0016 removed the scope check that used to precede
+it). With the real ``RateLimiter`` over a moto table: ``_get_limiter`` wires the
+settings through and the third call of a two-per-minute subject comes back 429.
 """
 
 from __future__ import annotations
@@ -103,14 +103,6 @@ def test_limiter_sees_subject_and_write_flag(limiter: StubLimiter) -> None:
     assert limiter.checks == [(SUB, False), (SUB, True)]
 
 
-def test_scope_check_precedes_the_limiter(limiter: StubLimiter) -> None:
-    status, _, _ = call(
-        _tools_call("boom_grant", {"path": "/p"}, authorizer={"sub": SUB, "scope": "wiki.read"})
-    )
-    assert status == 403
-    assert limiter.checks == []
-
-
 def test_unknown_tool_never_reaches_the_limiter(limiter: StubLimiter) -> None:
     call(_tools_call("no_such_tool"))
     assert limiter.checks == []
@@ -119,7 +111,7 @@ def test_unknown_tool_never_reaches_the_limiter(limiter: StubLimiter) -> None:
 def test_non_call_methods_never_reach_the_limiter(limiter: StubLimiter) -> None:
     call(make_event(rpc("tools/list")))
     call(make_event(rpc("ping")))
-    call(make_event(rpc("initialize", {"protocolVersion": "2026-07-28"})))
+    call(make_event(rpc("initialize", {"protocolVersion": "2025-06-18"})))
     assert limiter.checks == []
 
 

@@ -1,14 +1,14 @@
 """§12.8 item 5, the observable half — a user with zero grants sees nothing.
 
 Listing and direct reads answer 404 (never 403 — §10.4 indistinguishability), a
-write is a plain grant denial that names no scope (§6.5 row 3), and nothing was
+write is a plain grant denial that names no scope (§6.5 row 2), and nothing was
 written. The other half of item 5 — that no ``AssumeRole`` was made for any of
 these requests — is asserted offline in ``tests/unit/tools`` (``mint_count == 0``);
 CloudTrail is too slow to assert on here. See README.md.
 
-The zero-grant token must carry both scopes, exactly like the owner's: this file
-tests the grant layer, and a token short of ``wiki.write`` would produce an HTTP 403
-``insufficient_scope`` instead, which is the *other* row of §6.5.
+ADR-0016 withdrew custom scopes: the zero-grant token needs no particular scope any
+more, only the fact of holding zero grants — this file tests the grant layer, which
+was always the real authority (§3.3).
 """
 
 from __future__ import annotations
