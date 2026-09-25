@@ -1,0 +1,15 @@
+# Copy to infra/environments.toml (gitignored) and fill in your own values.
+# Each table overrides the placeholders in infra/config.py for that environment;
+# any EnvConfig field except `name` may be set. Leave a key out to keep the default.
+
+[dev]
+account = "123456789012"                                  # 12-digit AWS account id
+domain = "wiki-dev.example.com"
+authkit_domain = "https://your-env-staging.authkit.app"
+workos_web_client_id = "client_..."
+
+[prod]
+account = "123456789012"
+domain = "wiki.example.com"
+authkit_domain = "https://your-env.authkit.app"
+workos_web_client_id = "client_..."

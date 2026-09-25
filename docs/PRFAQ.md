@@ -6,7 +6,7 @@
 
 **mcp4me gives a team one permissioned knowledge tree its AI agents can read and write, with every change traced to a signed-in person.**
 
-*A self-deployed remote MCP server. One organization per instance, on its own domain. Default deny; owners grant. First instance: wiki.famestad.com, September 2026.*
+*A self-deployed remote MCP server. One organization per instance, on its own domain. Default deny; owners grant. First instance: wiki.example.com, September 2026.*
 
 mcp4me is a tree of markdown articles with granular permissions, immutable version history, and a single write path: an agent acting for a person who has signed in. It is reachable from Claude (claude.ai and Claude Code) as a remote MCP server. Each organization runs its own instance on its own AWS account, holding one tree. An instance ships empty; what it is *for* is decided by what gets put in it.
 
@@ -20,7 +20,7 @@ mcp4me is a tree of markdown articles with granular permissions, immutable versi
 
 > "I asked Claude why we chose the storage design and it read the decision record, the two it superseded, and the bet that paid for it. Nobody had to be in the room." — early user *(draft quote)*
 
-**How to get started.** Add `https://wiki.famestad.com/mcp` as a connector in Claude, sign in through the organization's AuthKit login, and ask an owner for a grant. Deploying your own instance is `make deploy` against your AWS account plus a WorkOS environment; setup takes about a day.
+**How to get started.** Add `https://wiki.example.com/mcp` as a connector in Claude, sign in through the organization's AuthKit login, and ask an owner for a grant. Deploying your own instance is `make deploy` against your AWS account plus a WorkOS environment; setup takes about a day.
 
 ## Customer FAQ
 
@@ -70,7 +70,7 @@ mcp4me is a tree of markdown articles with granular permissions, immutable versi
 
 **What is deliberately not in v1?** Unattended agents (Claude connectors have no machine-to-machine flow), users outside the organization, bundle export, event streams, full-text search, a human editing surface. Each is specified or reasoned about; none is built.
 
-**Who is the first customer?** A household of four with no turnover, at wiki.famestad.com. The second is this project's own decision register, migrated from the hosted decision-wiki that currently holds it.
+**Who is the first customer?** A household of four with no turnover, at wiki.example.com. The second is this project's own decision register, migrated from the hosted decision-wiki that currently holds it.
 
 **What are the real limits on who can be given access?** The client, not the server. A Free Claude account holds one custom connector. Team and Enterprise members cannot self-serve a connector URL; an owner must add it organization-wide. Setup is web or desktop only. The instance must be reachable from Anthropic's egress range. And connector auth settings are fixed once added, so the authorization server is not quietly swappable after launch.
 

@@ -26,9 +26,9 @@ DynamoDB table**, never by WorkOS. The two systems meet at exactly four values:
 
 | Value | Created in | Goes to |
 |---|---|---|
-| AuthKit domain `https://<slug>.authkit.app` | WorkOS (the environment you're setting up) | `authkit_domain` in `infra/config.py` |
+| AuthKit domain `https://<slug>.authkit.app` | WorkOS (the environment you're setting up) | `authkit_domain` in `infra/environments.toml` |
 | Canonical MCP URL `https://<domain>/mcp` | You choose `<domain>`; the api stack outputs it as `CanonicalMcpUrl` | WorkOS **resource indicator** (registered and set as default) |
-| Web client id + secret | WorkOS (confidential OAuth client for the web app) | id → `workos_web_client_id` in `infra/config.py`; secret → the Secrets Manager secret in the `WebSecretArn` output |
+| Web client id + secret | WorkOS (confidential OAuth client for the web app) | id → `workos_web_client_id` in `infra/environments.toml`; secret → the Secrets Manager secret in the `WebSecretArn` output |
 | Your WorkOS user id `user_…` | WorkOS (the `sub` in your token) | `make grant-owner SUBJECT=…`, your `own /` grant |
 
 The canonical URL is fixed by the domain you pick, so everything on the WorkOS side
@@ -99,7 +99,9 @@ Use the WorkOS **staging** environment for dev. Production needs its own environ
 
 ## Part 2 — AWS
 
-1. **Fill in `infra/config.py`** for the environment:
+1. **Fill in `infra/environments.toml`** for the environment — copy
+   `infra/environments.example.toml`; the file is gitignored, so your account ids and
+   domains stay out of the repo. Any `EnvConfig` field in `infra/config.py` can be set:
 
    | Field | Value |
    |---|---|
@@ -208,7 +210,7 @@ ask their agent to run `shared_with_me`.
 | A password prompt at first login | WorkOS defaults | Magic Auth on, Email + Password off (Part 1 step 5) |
 | Web login fails after the WorkOS redirect | `client_secret` still `REPLACE-ME`, or redirect URI mismatch | Part 3 step 2; the redirect must be exactly `https://<domain>/app/callback` |
 | Connector fails with an audience or invalid-token error | Resource indicator ≠ `CanonicalMcpUrl` | Make them byte-identical (a trailing slash counts), then remove and re-add the connector |
-| Synth stops: `credentials resolve to account X but infra/config.py pins Y` | Wrong profile, or an expired SSO session | `aws sso login --profile <right one>`, then check `aws sts get-caller-identity` |
+| Synth stops: `credentials resolve to account X but the config pins Y` | Wrong profile, or an expired SSO session | `aws sso login --profile <right one>`, then check `aws sts get-caller-identity` |
 | `Token has expired and refresh failed` | The SSO session expired | `aws sso login --profile <profile>` |
 | Bare `aws` commands can't find the stacks | The profile's default region isn't `us-west-2` | Add `--region us-west-2`. CDK is unaffected |
 | `cert-deploy` hangs at validation | The CNAME went to the wrong zone | The CNAME goes in the zone that serves `<domain>`, which may be a different AWS account |

@@ -18,7 +18,7 @@ that is mostly skips as a run that proved nothing.
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `WIKI_BASE_URL` | every HTTP test | Instance origin, no trailing slash — e.g. `https://wiki-dev.famestad.com`. Must be `https`. |
+| `WIKI_BASE_URL` | every HTTP test | Instance origin, no trailing slash — e.g. `https://wiki-dev.example.com`. Must be `https`. |
 | `WIKI_TEST_TOKEN` | tokens, zero-grant, item 8 | A live access token for the **bootstrap owner** (`own` on `/`), obtained through the §2 flow (a real authorization-code + PKCE round trip against the dev resource indicator). |
 | `WIKI_TEST_TOKEN_NOGRANTS` | zero-grant | A live token for a **second user who holds zero grants**. Same AuthKit environment; no particular scope is required (ADR-0016 withdrew custom scopes) — the tests exercise the grant layer, which is the only authority. |
 | `WIKI_TEST_TOKEN_WRONG_AUD` | tokens (optional) | A genuine AuthKit token issued for a **different** resource indicator. Skipped when unset. |

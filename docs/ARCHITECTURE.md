@@ -23,7 +23,7 @@ flowchart LR
 
 Reading the diagram: the client never talks to the substrate about identity; it talks to WorkOS, and the substrate only ever validates what WorkOS issued. The data plane cannot write a grant (its role is read-only on the table) and cannot read broadly (the S3 credential it mints is scoped to the caller). The admin web app is the only writer of grants and runs behind an interactive human session, so no MCP tool can change who sees what.
 
-**Environments.** Two AWS accounts, not two stacks: `wiki.famestad.com` (prod) and `wiki-dev.famestad.com` (dev, account 588747760390). Each has its own bucket, table, KMS key, canonical resource URI and WorkOS resource-indicator registration. Development data is synthetic; family records never enter the dev account.
+**Environments.** Two AWS accounts, not two stacks: `wiki.example.com` (prod) and `wiki-dev.example.com` (dev). Each has its own bucket, table, KMS key, canonical resource URI and WorkOS resource-indicator registration. Development data is synthetic; family records never enter the dev account.
 
 **Status, 17 Sep 2026 (gate updated 23 Sep 2026).** Built: skeleton plus increments A–G, 1,275 unit tests, synth-clean for dev and prod; certificate stack hand-deployed. CIMD is enabled and the HANDOFF §2 gate has run against WorkOS staging: checks 1, 3, 4 and 5 passed, along with the AS-9 token-lifetime check; check 6 (CIMD origin allowlist) does not exist in the WorkOS dashboard, so that control stays a wish; check 7 self-signup is now disabled. Not deployed: blocked on AWS credentials for the dev account, and the authorizer itself is still unwritten.
 
@@ -66,7 +66,7 @@ WorkOS answers who is calling; the substrate owns everything downstream of the t
 | Audience binding via resource indicators | Grant-write guard: owners grant only within their subtree |
 | User directory and login methods | Audit log of reads, writes, grants and denials |
 
-**Resource identity.** Canonical resource `https://wiki.famestad.com/mcp`; that string is the `aud` of every accepted token, byte for byte, and each environment registers its own. Provisioning fails if registration fails. Gate check 4, an unregistered resource being *refused* rather than silently issued against a default audience, is what keeps instances isolated.
+**Resource identity.** Canonical resource `https://wiki.example.com/mcp`; that string is the `aud` of every accepted token, byte for byte, and each environment registers its own. Provisioning fails if registration fails. Gate check 4, an unregistered resource being *refused* rather than silently issued against a default audience, is what keeps instances isolated.
 
 **Grants are the only authority.** ADR-0016 withdrew the custom-scope tier `wiki.read` / `wiki.write` once proposed above the grant layer: WorkOS issues scopes only from permissions assigned per-application in its dashboard, and a CIMD-registered client — how Claude registers — has no Scopes section to assign them from. The grant store was always where path granularity lived, and it is now the whole of what a token can touch. `Tool.scope` survives as a read/write classification for the write rate limit; it is not checked.
 
@@ -188,8 +188,8 @@ The web app's session is a signed `__Host-` cookie (12 h), checked per request a
 
 |  | Prod | Dev |
 | --- | --- | --- |
-| Resource | `https://wiki.famestad.com/mcp` | `https://wiki-dev.famestad.com/mcp` |
-| Account | second account, not yet provisioned | 588747760390 |
+| Resource | `https://wiki.example.com/mcp` | `https://wiki-dev.example.com/mcp` |
+| Account | second account, not yet provisioned | the dev account, set in `infra/environments.toml` |
 | Object Lock | governance, 1 year | none, so the account can be torn down |
 | Data | family records | synthetic only |
 

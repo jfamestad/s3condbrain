@@ -4,7 +4,7 @@ writing the authorizer (HANDOFF §2, §11.3 step 4).
     uv run python scripts/oauth_gate.py \\
         --authkit https://<slug>.authkit.app \\
         --client-id client_01... \\
-        --resource https://wiki-dev.famestad.com/mcp
+        --resource https://wiki-dev.example.com/mcp
 
 It performs, in order:
 

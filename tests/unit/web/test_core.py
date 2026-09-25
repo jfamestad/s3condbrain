@@ -190,7 +190,7 @@ def test_oauth_start_and_finish(settings: Settings, rsa_key: Any) -> None:
     assert "code_challenge_method=S256" in url and "resource=" not in url
     assert f"nonce={payload['nonce']}" in url and f"state={payload['state']}" in url
     assert payload["nonce"] != payload["state"]
-    assert c.redirect_uri == "https://wiki-dev.famestad.com/app/callback"
+    assert c.redirect_uri == "https://wiki-dev.example.com/app/callback"
     body["id_token"] = _id_token(rsa_key, s, nonce=str(payload["nonce"]))
     ident = c.finish("code123", str(payload["state"]), payload)
     assert ident.subject == SUBJECT and ident.email == "test@example.com"

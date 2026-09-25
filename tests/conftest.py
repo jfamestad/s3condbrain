@@ -23,10 +23,14 @@ TEST_ENV = {
     "STORAGE_ROLE_ARN": "arn:aws:iam::123456789012:role/wiki-storage",
     "KMS_KEY_ARN": "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-0000-0000-000000000000",
     "AUTHKIT_DOMAIN": "https://test.authkit.app",
-    "CANONICAL_MCP_URL": "https://wiki-dev.famestad.com/mcp",
+    "CANONICAL_MCP_URL": "https://wiki-dev.example.com/mcp",
     "ALLOWED_ORIGINS": "https://claude.ai",
     "MCP_STRICT_HEADERS": "false",
 }
+
+# Tests see infra/config.py's placeholders, never an operator's environments.toml.
+# Set at import, not in a fixture: module-scoped synth fixtures load config first.
+os.environ["WIKI_ENV_FILE"] = ""
 
 
 @pytest.fixture(autouse=True)

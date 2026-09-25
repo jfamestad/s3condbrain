@@ -75,7 +75,7 @@ def _require_env(name: str) -> str:
 
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    """``WIKI_BASE_URL`` without a trailing slash, e.g. ``https://wiki-dev.famestad.com``."""
+    """``WIKI_BASE_URL`` without a trailing slash, e.g. ``https://wiki-dev.example.com``."""
     url = _require_env("WIKI_BASE_URL").rstrip("/")
     if not url.startswith("https://"):
         pytest.fail(f"WIKI_BASE_URL must be https (AS-11): {url!r}")
