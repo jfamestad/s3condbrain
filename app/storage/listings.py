@@ -175,6 +175,7 @@ class ListingChild:
     size: int = 0
     seq: int = 0
     trust: str = "unverified"
+    link_to: str | None = None  # links only (s3condbrain S7)
     visible_children: int = 0  # folders only
 
     @property
@@ -203,6 +204,11 @@ class ListingChild:
             size=int(size),
             seq=_int(frontmatter.get("seq")),
             trust=trust_of(frontmatter),
+            link_to=(
+                _optional_str(frontmatter.get("link_to"))
+                if frontmatter.get("type") == "link"
+                else None
+            ),
         )
 
     @classmethod
@@ -226,7 +232,7 @@ class ListingChild:
             "seq": self.seq,
             "trust": self.trust,
         }
-        for key in ("title", "description", "status", "stale_after"):
+        for key in ("title", "description", "status", "stale_after", "link_to"):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
@@ -251,6 +257,7 @@ class ListingChild:
             size=_int(data.get("size")),
             seq=_int(data.get("seq")),
             trust=str(data.get("trust", "unverified")),
+            link_to=_optional_str(data.get("link_to")),
         )
 
 

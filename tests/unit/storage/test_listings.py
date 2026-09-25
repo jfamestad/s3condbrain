@@ -133,6 +133,21 @@ class TestWireShapes:
         assert data["tags"] == []
         assert data["trust"] == "unverified"
 
+    def test_link_child_carries_its_target(self) -> None:
+        child = ListingChild.article(
+            "racing.md", '"e1"', 40, {"type": "link", "link_to": "/racing", "seq": 1}
+        )
+        assert child.type == "link"
+        assert child.link_to == "/racing"
+        data = child.to_json()
+        assert data["link_to"] == "/racing"
+        assert ListingChild.from_json(data) == child
+
+    def test_doc_child_has_no_link_to(self) -> None:
+        child = ListingChild.article("a.md", '"e"', 1, {"type": "doc", "link_to": "/x"})
+        assert child.link_to is None
+        assert "link_to" not in child.to_json()
+
     def test_folder_child_round_trips(self) -> None:
         child = ListingChild.folder("setup", 2)
         assert child.visible is True
