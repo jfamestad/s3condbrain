@@ -15,6 +15,7 @@ the self-heal comparison key — §8.6), and every write changes that.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from app.auth.credentials import Shape
@@ -72,7 +73,8 @@ INPUT_SCHEMA: dict[str, Any] = {
 CURRENT_BODY_CAP = 100_000
 
 
-def _stale(current: StoredObject) -> ToolError:
+def stale_error(current: StoredObject) -> ToolError:
+    """The §10.14 conflict for a stale ``if_version``: current version and body."""
     body = parse(current.body).body
     return conflict(
         "The article changed since you read it. Merge your edit into current_body "
@@ -82,7 +84,7 @@ def _stale(current: StoredObject) -> ToolError:
     )
 
 
-def _live(st: ArticleStore, s3: Any, path: str) -> StoredObject:
+def live_for_update(st: ArticleStore, s3: Any, path: str) -> StoredObject:
     """The current object, or the §10.10 error for why it cannot be updated.
 
     ``s3`` is the WRITE credential for exactly this key, so S3's 403 on a missing
@@ -97,6 +99,58 @@ def _live(st: ArticleStore, s3: Any, path: str) -> StoredObject:
     return current
 
 
+def write_current(
+    ctx: ToolContext,
+    st: ArticleStore,
+    s3: Any,
+    path: str,
+    current: StoredObject,
+    frontmatter: dict[str, Any],
+    content: str,
+    on_stale: Callable[[StoredObject], ToolError] = stale_error,
+) -> dict[str, Any]:
+    """Write ``frontmatter`` + ``content`` over ``current`` — the tail every
+    in-place write shares once the caller has checked the grant, minted the WRITE
+    credential for ``path`` and compared ``if_version``.
+
+    ``check_link`` → ``seq + 1`` → ``serialize_article`` (the 1 MiB cap) →
+    ``put_if_match`` on ``current``'s ETag → refresh the parent listing.
+
+    Args:
+        ctx: The tool context.
+        st: The article store.
+        s3: The WRITE credential for exactly ``path``.
+        path: The article path.
+        current: The live object the caller read and version-checked.
+        frontmatter: The validated block to store, without ``seq``. Mutated: ``seq``
+            is set on it.
+        content: The markdown body.
+        on_stale: Builds the conflict when S3 answers 412 (lost the race), from the
+            object that is live now.
+
+    Returns:
+        ``{"path", "version", "seq"}`` — the ``WRITE_RESULT_SCHEMA`` fields.
+
+    Raises:
+        ToolError: 400 on a bad link or oversize object, 409 when the race was lost,
+            403 when S3 refuses the put, 404 when the object is gone on re-read.
+    """
+    check_link(frontmatter)
+    frontmatter["seq"] = parse(current.body).seq + 1
+    body = serialize_article(frontmatter, content)
+    try:
+        written = st.put_if_match(s3, path, body, current.etag, metadata(ctx, KIND_WRITE))
+    except PreconditionFailed:
+        # Lost the race between our read and our write: report what is there now.
+        raise on_stale(live_for_update(st, s3, path)) from None
+    except AccessDenied:
+        raise forbidden() from None
+    refresh_parent(
+        ctx, path, ListingChild.article(basename(path), written.etag, len(body), frontmatter)
+    )
+    return {"path": path, "version": written.version, "seq": frontmatter["seq"]}
+
+
 def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     path = article_path(args.get("path"))
     content = content_arg(args)
@@ -109,27 +163,17 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
     s3 = ctx.minter.s3(ctx.subject, Shape.WRITE, path)
     st = store(ctx)
-    current = _live(st, s3, path)
+    current = live_for_update(st, s3, path)
     if current.version != if_version:
-        raise _stale(current)
+        raise stale_error(current)
 
-    stored = parse(current.body)
     # A kept block is re-checked against §10.2 exactly as a supplied one is.
-    frontmatter = replacement if replacement is not None else revalidate_stored(stored.frontmatter)
-    check_link(frontmatter)
-    frontmatter["seq"] = stored.seq + 1
-    body = serialize_article(frontmatter, content)
-    try:
-        written = st.put_if_match(s3, path, body, current.etag, metadata(ctx, KIND_WRITE))
-    except PreconditionFailed:
-        # Lost the race between our read and our write: report what is there now.
-        raise _stale(_live(st, s3, path)) from None
-    except AccessDenied:
-        raise forbidden() from None
-    refresh_parent(
-        ctx, path, ListingChild.article(basename(path), written.etag, len(body), frontmatter)
+    frontmatter = (
+        replacement
+        if replacement is not None
+        else revalidate_stored(parse(current.body).frontmatter)
     )
-    return {"path": path, "version": written.version, "seq": frontmatter["seq"]}
+    return write_current(ctx, st, s3, path, current, frontmatter, content)
 
 
 TOOL = Tool(
@@ -141,4 +185,11 @@ TOOL = Tool(
     handler=handle,
 )
 
-__all__ = ["TOOL", "handle"]
+__all__ = [
+    "CURRENT_BODY_CAP",
+    "TOOL",
+    "handle",
+    "live_for_update",
+    "stale_error",
+    "write_current",
+]
