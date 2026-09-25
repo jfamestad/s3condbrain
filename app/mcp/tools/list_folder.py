@@ -29,13 +29,15 @@ from app.mcp.tools._common import (
     folder_path,
     summary_from,
 )
+from app.mcp.tools._links import is_local, link_target
 from app.mcp.tools._listings import index
 from app.storage.articles import AccessDenied
 from app.storage.listings import Listing, ListingChild, is_stale, join
 
 DESCRIPTION = (
     "Immediate contents of one folder — child folders by name, articles as summaries. "
-    "Does not recurse. Archived articles and move pointers never appear."
+    "Does not recurse. Links show their target and whether you can reach it. "
+    "Archived articles and move pointers never appear."
 )
 
 INPUT_SCHEMA: dict[str, Any] = {
@@ -72,6 +74,7 @@ def summary_of(folder: str, child: ListingChild) -> dict[str, Any]:
         tags=list(child.tags) if child.tags else None,
         status=child.status,
         stale=is_stale(child.stale_after),
+        link_to=child.link_to,
     )
 
 
@@ -83,6 +86,24 @@ def render(folder: str, listing: Listing) -> dict[str, Any]:
         "articles": [summary_of(folder, c) for c in sorted(listing.articles, key=lambda c: c.name)],
         "truncated": False,
     }
+
+
+def _reachable(ctx: ToolContext, target: str) -> bool:
+    """Whether the caller holds ``read`` on a local link target — a grant lookup only.
+
+    Args:
+        ctx: The calling context.
+        target: A stored ``link_to`` value, which a raw write may have left malformed.
+
+    Returns:
+        True when the caller can read the target; False otherwise, including when the
+        stored target is not a valid path.
+    """
+    try:
+        link_target(target)
+    except ToolError:
+        return False
+    return ctx.grants.resolve(ctx.subject, target).allows(Permission.READ)
 
 
 def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -103,6 +124,12 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise not_found() from None
 
     result = render(path, listing)
+    for summary in result["articles"]:
+        target = summary.get("link_to")
+        if target is not None and is_local(target):
+            # A grant lookup only: nothing is read at the target, and no access
+            # decision is taken, so nothing is recorded for the audit line.
+            summary["resolved"] = _reachable(ctx, target)
     if path != ROOT and not result["folders"] and not result["articles"]:
         # Nothing visible here: a folder that does not exist, or one holding only
         # pointers and tombstones. Both read as absence (§10.4).

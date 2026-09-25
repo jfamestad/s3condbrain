@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from app.auth.credentials import Shape
+from app.auth.types import Permission
 from app.errors import ToolError
 from app.mcp.protocol import ToolContext
 from app.mcp.tools._links import (
@@ -19,11 +20,13 @@ from app.mcp.tools._links import (
     link_target,
 )
 from app.mcp.tools.create_article import TOOL as CREATE
+from app.mcp.tools.list_folder import TOOL as LIST
 from app.mcp.tools.read_article import TOOL as READ
 from app.mcp.tools.update_article import TOOL as UPDATE
 from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
 
 LINK_PATH = "/me/racing.md"
+FRIEND = "user_friend"
 
 
 @pytest.mark.parametrize(
@@ -182,3 +185,54 @@ def test_read_raw_link_without_target_is_a_link_with_empty_target(
     put_raw(LINK_PATH, {"type": "link"})
     out = call(READ, ctx, path=LINK_PATH)
     assert out == {"kind": "link", "path": LINK_PATH, "link_to": "", "note": out["note"]}
+
+
+def test_list_folder_shows_link_resolved_for_owner(ctx: ToolContext) -> None:
+    _create_link(ctx, "/racing")
+    out = call(LIST, ctx, path="/me")
+    [link] = out["articles"]
+    assert link["type"] == "link"
+    assert link["link_to"] == "/racing"
+    assert link["resolved"] is True
+
+
+def test_list_folder_marks_unreachable_target_unresolved(
+    make_ctx: Any, seed_grant: Any, ctx: ToolContext
+) -> None:
+    seed_grant(FRIEND, "/friend", Permission.WRITE)
+    friend = make_ctx(FRIEND)
+    _create_link(friend, "/secret", path="/friend/secret.md")
+    out = call(LIST, friend, path="/friend")
+    [link] = out["articles"]
+    assert link["link_to"] == "/secret"
+    assert link["resolved"] is False
+
+
+def test_foreign_link_has_no_resolved_field(ctx: ToolContext) -> None:
+    _create_link(ctx, "https://wiki.acme.com/a/standards/torque.md")
+    [link] = call(LIST, ctx, path="/me")["articles"]
+    assert "resolved" not in link
+
+
+def test_resolving_a_link_touches_nothing_at_the_target(
+    make_ctx: Any, seed_grant: Any, minter: FakeMinter, ctx: ToolContext
+) -> None:
+    seed_grant(FRIEND, "/friend", Permission.WRITE)
+    seed_grant(FRIEND, "/racing", Permission.READ)
+    friend = make_ctx(FRIEND)
+    _create_link(friend, "/racing", path="/friend/racing.md")
+    minter.calls.clear()
+    [link] = call(LIST, friend, path="/friend")["articles"]
+    assert link["resolved"] is True
+    # A grant lookup only: no credential for the target, no audited decision on it.
+    assert [path for _subject, _shape, path in minter.calls] == ["/friend"]
+    assert ("/racing", Permission.READ.value) not in friend.audit.grants_used
+
+
+def test_malformed_stored_target_lists_as_unresolved(
+    ctx: ToolContext, put_raw: Callable[..., str]
+) -> None:
+    put_raw(LINK_PATH, {"type": "link", "link_to": "/racing/../secret"})
+    [link] = call(LIST, ctx, path="/me")["articles"]
+    assert link["link_to"] == "/racing/../secret"
+    assert link["resolved"] is False

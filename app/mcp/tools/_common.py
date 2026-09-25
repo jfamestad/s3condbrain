@@ -388,6 +388,7 @@ def summary_from(
     tags: list[str] | None = None,
     status: str | None = None,
     stale: bool | None = None,
+    link_to: str | None = None,
 ) -> dict[str, Any]:
     """Build an ``article_summary`` (§10.2), omitting fields that are ``None``."""
     summary: dict[str, Any] = {"path": path, "type": type, "version": version, "trust": trust}
@@ -399,6 +400,7 @@ def summary_from(
         "stale": stale,
         "size_bytes": size_bytes,
         "seq": seq,
+        "link_to": link_to,
     }
     summary.update({k: v for k, v in optional.items() if v is not None})
     return summary
@@ -549,6 +551,17 @@ ARTICLE_SUMMARY_SCHEMA: dict[str, Any] = {
         "size_bytes": {"type": "integer"},
         "seq": {"type": "integer"},
         "version": VERSION_SCHEMA,
+        "link_to": {
+            "type": "string",
+            "description": "Links only: the target path or reference URL.",
+        },
+        "resolved": {
+            "type": "boolean",
+            "description": (
+                "Local links only: whether you can read the target now. False means "
+                "the share was revoked or never existed — the link's owner removes it."
+            ),
+        },
     },
 }
 
