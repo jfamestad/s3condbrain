@@ -12,6 +12,7 @@ from app.mcp.protocol import Tool
 
 _MODULES = (
     "search",
+    "search_and_read",
     "list_folder",
     "read_article",
     "resolve_reference",
