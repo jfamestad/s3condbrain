@@ -278,6 +278,10 @@ def test_a_link_grants_nothing(
     seed_grant(FRIEND, "/friend", Permission.WRITE)
     friend = make_ctx(FRIEND)
     _create_link(friend, "/secret", path="/friend/secret.md")
+    # Positive control: search can see the target, so the friend's empty result means
+    # something. Done before the clear because the owner's search mints for /secret.
+    owner_hits = call(SEARCH, ctx, query="plan")["hits"]
+    assert any(h["path"] == "/secret/plan.md" for h in owner_hits)
     minter.calls.clear()
 
     assert call(READ, friend, path="/friend/secret.md")["link_to"] == "/secret"
