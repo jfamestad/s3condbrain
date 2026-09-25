@@ -335,7 +335,7 @@ def test_tools_list_descriptors() -> None:
     status, _, body = call(make_event(rpc("tools/list")))
     assert status == 200
     tools = body["result"]["tools"]
-    assert [t["name"] for t in tools] == ["echo", "boom_grant", "crash"]
+    assert [t["name"] for t in tools] == ["echo", "boom_grant", "boom_conflict", "crash"]
     echo = tools[0]
     assert set(echo) == {"name", "description", "inputSchema", "outputSchema"}
     assert "outputSchema" not in tools[1]
@@ -369,9 +369,25 @@ def test_tool_error_is_is_error_result_with_envelope() -> None:
     assert result["structuredContent"]["status"] == 403
     assert result["structuredContent"]["code"] == "forbidden"
     assert result["content"][0]["type"] == "text"
-    assert result["content"][0]["text"] == result["structuredContent"]["message"]
+    # The text carries the whole envelope: clients that show the model only
+    # ``content`` for errors (Claude Code) must still see every field.
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
     # grant denial must never name a scope (§6.5)
     assert "wiki." not in json.dumps(result)
+
+
+def test_tool_error_details_reach_the_text() -> None:
+    """A 409's recovery fields (current_version, edits_apply, current_body...) are
+    useless if the model never sees them; they must be in ``content`` text too."""
+    status, _, body = call(_tools_call("boom_conflict", {"path": "/p"}))
+    assert status == 200
+    result = body["result"]
+    assert result["isError"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert text == result["structuredContent"]
+    assert text["current_version"] == "v2"
+    assert text["edits_apply"] is True
+    assert text["message"] == "Changed since you read it."
 
 
 def test_unknown_tool_is_invalid_params() -> None:
@@ -421,6 +437,7 @@ def test_unexpected_exception_is_500_envelope_and_says_nothing() -> None:
         "code": "internal",
         "message": "The server could not complete the request.",
     }
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
     raw = json.dumps(body)
     assert "Traceback" not in raw
     assert "RuntimeError" not in raw

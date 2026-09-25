@@ -8,6 +8,7 @@ settings through and the third call of a two-per-minute subject comes back 429.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -72,7 +73,8 @@ def test_rejection_is_a_429_tool_error_envelope(limiter: StubLimiter) -> None:
         "message": "Too many calls; slow down.",
         "retry_after": RETRY_AFTER,
     }
-    assert result["content"] == [{"type": "text", "text": "Too many calls; slow down."}]
+    # The text carries the whole envelope, so the model sees retry_after too.
+    assert result["content"] == [{"type": "text", "text": json.dumps(result["structuredContent"])}]
 
 
 def test_rejection_logs_the_audit_line(limiter: StubLimiter, log_lines) -> None:

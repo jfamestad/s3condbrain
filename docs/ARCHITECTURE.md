@@ -251,7 +251,7 @@ Fourteen tools, eight reads and six writes; every read is a search or a targeted
 
 **Conventions.** Path is identity: absolute, lowercase, `.md`-suffixed; strip the suffix for the OKF concept id. `version` is the ETag, opaque, returned by every read, required by every mutating call as `if_version`, compared verbatim after stripping quotes, never parsed. A read landing on a pointer returns one `forward_reference` and stops. On `update_article`, `frontmatter` replaces rather than merges; omit it to leave frontmatter alone. `edit_article` merges fields, `null` removing one. Listings and search return only what the caller may see, never a denial marker.
 
-**Error envelope.** Tool errors are `isError: true` with `structuredContent` carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip (`edit_article` returns `edits_apply` instead of the body). Authentication failure is not in this envelope; it is HTTP.
+**Error envelope.** Tool errors are `isError: true` with `structuredContent` (mirrored as JSON in the `content` text, which is all some clients show the model) carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip (`edit_article` returns `edits_apply` instead of the body). Authentication failure is not in this envelope; it is HTTP.
 
 | Status | Code | Meaning | Retry? |
 | --- | --- | --- | --- |

@@ -1379,7 +1379,7 @@ Every grant the caller holds: each folder or article shared with them, with the 
 
 ### 10.14 Error envelope
 
-Errors are returned as MCP tool errors (`isError: true`) with `structuredContent` matching the shape below. The only one an agent is expected to act on programmatically is `409`, which carries enough to merge and retry without a second round trip.
+Errors are returned as MCP tool errors (`isError: true`) with `structuredContent` matching the shape below, and the same envelope as JSON in the `content` text — some clients (Claude Code) show the model only the text of an error, and the 409's recovery fields are useless unless the model sees them. The only one an agent is expected to act on programmatically is `409`, which carries enough to merge and retry without a second round trip.
 
 **Not in this envelope:** authentication and scope failures. Those are HTTP `401` and `403` responses emitted before any tool runs (§6.5), because step-up re-authorization is something a client does on an HTTP challenge and never on a tool result.
 

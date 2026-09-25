@@ -38,6 +38,10 @@ def _boom_grant(ctx: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
     raise errors.forbidden()
 
 
+def _boom_conflict(ctx: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
+    raise errors.conflict("Changed since you read it.", current_version="v2", edits_apply=True)
+
+
 def _crash(ctx: ToolContext, arguments: dict[str, Any]) -> dict[str, Any]:
     # message built from runtime data, as a real failure would be (content leaking
     # into an exception message is the case the log must survive)
@@ -59,6 +63,7 @@ def fake_registry() -> dict[str, Tool]:
     tools = (
         _tool("echo", "wiki.read", _echo),
         _tool("boom_grant", "wiki.write", _boom_grant),
+        _tool("boom_conflict", "wiki.write", _boom_conflict),
         _tool("crash", "wiki.read", _crash),
     )
     return {t.name: t for t in tools}

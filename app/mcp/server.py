@@ -13,7 +13,8 @@ Responsibilities, in order, per POST:
    (202, empty), ``ping``, ``tools/list``, ``tools/call``. Unknown → 404, ``-32601``.
 6. For ``tools/call``: the handler runs directly — custom scopes are not an
    authorization input (ADR-0016; the grant layer alone decides, §3.3). ``ToolError``
-   → result with ``isError: true`` and ``structuredContent`` = envelope. Any other
+   → result with ``isError: true``, ``structuredContent`` = envelope and the same
+   envelope as JSON in the ``content`` text (clients may show only the text). Any other
    exception → ``isError`` 500 envelope, logged with the request id, body says
    nothing more (§12.3).
 
@@ -315,9 +316,14 @@ def _tools_call(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             ctx.limiter.check(ctx.subject, is_write=tool.scope == SCOPE_WRITE)
         result = tool.handler(ctx, arguments)
     except ToolError as err:
+        # The text carries the whole envelope, as a success result's does: some
+        # clients (Claude Code) show the model only ``content`` for errors, and a
+        # 409's recovery fields (current_version, edits_apply, current_body) are
+        # useless unless the model sees them.
+        envelope = err.structured()
         return {
-            "content": [{"type": "text", "text": err.message}],
-            "structuredContent": err.structured(),
+            "content": [{"type": "text", "text": json.dumps(envelope)}],
+            "structuredContent": envelope,
             "isError": True,
         }
     except Exception as exc:  # noqa: BLE001 — the boundary; body says nothing (§12.3)
@@ -329,7 +335,7 @@ def _tools_call(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             stack="".join(traceback.format_tb(exc.__traceback__)),
         )
         return {
-            "content": [{"type": "text", "text": _INTERNAL_ENVELOPE["message"]}],
+            "content": [{"type": "text", "text": json.dumps(_INTERNAL_ENVELOPE)}],
             "structuredContent": dict(_INTERNAL_ENVELOPE),
             "isError": True,
         }
