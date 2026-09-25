@@ -38,6 +38,7 @@ from app.mcp.tools._common import (
     validate_frontmatter,
     version_arg,
 )
+from app.mcp.tools._links import check_link
 from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed, StoredObject
 from app.storage.listings import ListingChild, basename
@@ -114,6 +115,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     stored = parse(current.body)
     # A kept block is re-checked against §10.2 exactly as a supplied one is.
     frontmatter = replacement if replacement is not None else revalidate_stored(stored.frontmatter)
+    check_link(frontmatter)
     frontmatter["seq"] = stored.seq + 1
     body = serialize_article(frontmatter, content)
     try:

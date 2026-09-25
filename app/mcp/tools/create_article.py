@@ -34,6 +34,7 @@ from app.mcp.tools._common import (
     store,
     validate_frontmatter,
 )
+from app.mcp.tools._links import check_link
 from app.mcp.tools._listings import refresh_parent
 from app.storage.articles import AccessDenied, ArticleStore, PreconditionFailed
 from app.storage.listings import ListingChild, basename
@@ -87,6 +88,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     reject_reserved_name(path)
     content = content_arg(args)
     frontmatter = dict(validate_frontmatter(args.get("frontmatter")))
+    check_link(frontmatter)
 
     # The parent folder: ``write`` on any ancestor suffices (§10.9), and the cascade
     # resolves every ancestor from that one path. Recorded for the audit line (AS-10).

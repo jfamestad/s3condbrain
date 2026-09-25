@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from app.errors import ToolError
+from app.mcp.protocol import ToolContext
 from app.mcp.tools._links import (
     LINK_TO,
     TYPE_LINK,
@@ -13,6 +16,11 @@ from app.mcp.tools._links import (
     link_reference,
     link_target,
 )
+from app.mcp.tools.create_article import TOOL as CREATE
+from app.mcp.tools.update_article import TOOL as UPDATE
+from tests.unit.tools.conftest import call, expect_error
+
+LINK_PATH = "/me/racing.md"
 
 
 @pytest.mark.parametrize(
@@ -72,3 +80,74 @@ def test_link_reference_shape() -> None:
     assert ref["path"] == "/me/racing.md"
     assert ref["link_to"] == "/racing"
     assert "list_folder" in ref["note"]
+
+
+def _create_link(ctx: ToolContext, target: str = "/racing", path: str = LINK_PATH) -> Any:
+    return call(
+        CREATE,
+        ctx,
+        path=path,
+        frontmatter={"type": "link", "link_to": target, "title": "Racing (shared)"},
+        content="",
+    )
+
+
+def test_create_link(ctx: ToolContext) -> None:
+    assert _create_link(ctx)["seq"] == 1
+
+
+def test_create_link_without_target_is_400(ctx: ToolContext) -> None:
+    expect_error(
+        CREATE, ctx, 400, "bad_request", path=LINK_PATH, frontmatter={"type": "link"}, content=""
+    )
+
+
+def test_create_link_with_bad_target_is_400(ctx: ToolContext) -> None:
+    expect_error(
+        CREATE,
+        ctx,
+        400,
+        "bad_request",
+        path=LINK_PATH,
+        frontmatter={"type": "link", "link_to": "racing"},
+        content="",
+    )
+
+
+def test_link_to_on_a_doc_is_400(ctx: ToolContext) -> None:
+    expect_error(
+        CREATE,
+        ctx,
+        400,
+        "bad_request",
+        path=LINK_PATH,
+        frontmatter={"type": "doc", "link_to": "/racing"},
+        content="",
+    )
+
+
+def test_retarget_link_with_update(ctx: ToolContext) -> None:
+    version = _create_link(ctx)["version"]
+    out = call(
+        UPDATE,
+        ctx,
+        path=LINK_PATH,
+        if_version=version,
+        frontmatter={"type": "link", "link_to": "/family"},
+        content="",
+    )
+    assert out["seq"] == 2
+
+
+def test_update_link_to_bad_target_is_400(ctx: ToolContext) -> None:
+    version = _create_link(ctx)["version"]
+    expect_error(
+        UPDATE,
+        ctx,
+        400,
+        "bad_request",
+        path=LINK_PATH,
+        if_version=version,
+        frontmatter={"type": "link", "link_to": "nope"},
+        content="",
+    )
