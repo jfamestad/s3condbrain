@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.auth.credentials import Shape
 from app.errors import ToolError
 from app.mcp.protocol import ToolContext
 from app.mcp.tools._links import (
@@ -17,8 +18,9 @@ from app.mcp.tools._links import (
     link_target,
 )
 from app.mcp.tools.create_article import TOOL as CREATE
+from app.mcp.tools.read_article import TOOL as READ
 from app.mcp.tools.update_article import TOOL as UPDATE
-from tests.unit.tools.conftest import call, expect_error
+from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
 
 LINK_PATH = "/me/racing.md"
 
@@ -151,3 +153,23 @@ def test_update_link_to_bad_target_is_400(ctx: ToolContext) -> None:
         frontmatter={"type": "link", "link_to": "nope"},
         content="",
     )
+
+
+def test_read_link_returns_reference_and_reads_nothing_at_target(
+    ctx: ToolContext, minter: FakeMinter
+) -> None:
+    _create_link(ctx, "/racing/setup/rear-bar.md")
+    minter.calls.clear()
+    out = call(READ, ctx, path=LINK_PATH)
+    assert out == {
+        "kind": "link",
+        "path": LINK_PATH,
+        "link_to": "/racing/setup/rear-bar.md",
+        "note": out["note"],
+    }
+    assert minter.calls == [(OWNER, Shape.READ, LINK_PATH)]  # never the target
+
+
+def test_read_descriptor_advertises_link_variant() -> None:
+    kinds = [v["properties"]["kind"].get("const") for v in READ.output_schema["oneOf"][1:]]
+    assert "link" in kinds

@@ -40,13 +40,14 @@ from app.mcp.tools._common import (
     store,
     trust_of,
 )
+from app.mcp.tools._links import LINK_REFERENCE_SCHEMA, TYPE_LINK, link_reference
 from app.storage.markdown import Article, parse
 
 DESCRIPTION = (
-    "Current live version of one article: frontmatter plus body. Returns a forward "
-    "reference instead of content when the path holds a move pointer — one hop; the "
-    "server does not follow it, the caller does, and the next read is authorized "
-    "against the next path."
+    "Current live version of one article: frontmatter plus body. When the path holds "
+    "a move pointer or a link, returns a reference instead of content — one hop; the "
+    "server does not follow it, the caller does, and the next call is authorized "
+    "against the target."
 )
 
 INPUT_SCHEMA: dict[str, Any] = {
@@ -100,6 +101,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
             },
         },
         FORWARD_REFERENCE_SCHEMA,
+        LINK_REFERENCE_SCHEMA,
     ]
 }
 
@@ -192,6 +194,8 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     article = parse(current.body)
     if article.type == TYPE_POINTER:
         return _forward_reference(article)
+    if article.type == TYPE_LINK:
+        return link_reference(path, article.frontmatter)
     if article.type == TYPE_ARCHIVED:
         raise not_found()
 
