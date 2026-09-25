@@ -12,6 +12,13 @@
   {% if page.moved_to_href %}<a href="{{ page.moved_to_href }}">{{ page.moved_to }}</a>{% else %}<code>{{ page.moved_to }}</code>{% endif %}{% if page.moved_at %} (moved {{ page.moved_at }}){% endif %}.</p>
   <p class="muted">You may not have access at its new location — ask an owner. Earlier versions of this page remain in <a href="{{ page.history_href }}">its history here</a>.</p>
 </div>
+{% elif page.type == "link" %}
+<h1>{{ page.title }}</h1>
+<div class="warn">
+  <p>Link to
+  {% if page.link_to_href %}<a href="{{ page.link_to_href }}">{{ page.link_to }}</a>{% else %}<code>{{ page.link_to }}</code>{% endif %}.</p>
+  <p class="muted">Access is checked there. If it doesn't open, you don't hold read on the target, or it no longer exists — remove this link.</p>
+</div>
 {% else %}
 <h1>{{ page.title }}</h1>
 {% if page.description %}<p class="muted">{{ page.description }}</p>{% endif %}

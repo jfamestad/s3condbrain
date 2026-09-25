@@ -51,6 +51,7 @@ from app.mcp.tools._common import (
     folder_path,
     trust_of,
 )
+from app.mcp.tools._links import TYPE_LINK, is_local, link_target
 from app.mcp.tools.search import score, searchable_area, tokens
 from app.storage.articles import (
     META_ACTOR,
@@ -215,6 +216,8 @@ class PageVars:
     moved_to: str = ""
     moved_to_href: str = ""
     moved_at: str = ""
+    link_to: str = ""
+    link_to_href: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +509,26 @@ def _page_vars(path: str, article: Article) -> PageVars:
     )
 
 
+def _link_vars(path: str, article: Article) -> PageVars:
+    """A link's page: names the target, reads nothing there (s3condbrain S7).
+
+    Only a valid local target becomes a link; a foreign reference or a target a raw
+    write left malformed is shown as text.
+    """
+    data = _page_vars(path, article)
+    target = str(article.frontmatter.get("link_to") or "")
+    data.link_to = target
+    try:
+        valid = link_target(target)
+    except ToolError:
+        valid = ""
+    if valid and is_local(valid):
+        data.link_to_href = _article_href(valid) if valid.endswith(".md") else _folder_href(valid)
+    data.body_html = ""
+    data.toc = []
+    return data
+
+
 def _moved_vars(path: str, article: Article) -> PageVars:
     """The one-hop page for a pointer: names the destination, reads nothing there."""
     data = _page_vars(path, article)
@@ -748,6 +771,8 @@ def node(request: Request, ctx: WebContext) -> Response:
     article = parse(current.body)
     if article.type == TYPE_POINTER:
         return page("article.html", ctx, page=_moved_vars(path, article), history_note=HISTORY_NOTE)
+    if article.type == TYPE_LINK:
+        return page("article.html", ctx, page=_link_vars(path, article), history_note=HISTORY_NOTE)
     if article.type == TYPE_ARCHIVED:
         raise _gone()
     return page("article.html", ctx, page=_page_vars(path, article), history_note=HISTORY_NOTE)

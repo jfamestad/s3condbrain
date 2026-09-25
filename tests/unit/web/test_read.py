@@ -295,6 +295,32 @@ def test_pointer_renders_moved_page_without_reading_destination(
     assert mints() == [(SUBJECT, "read", "/racing/old.md")]
 
 
+def test_link_renders_target_without_reading_it(
+    session_cookie: str, grant: Callable[..., None], put_raw: Callable[..., str]
+) -> None:
+    grant("/")
+    put_raw("/me/racing.md", {"type": "link", "link_to": "/racing", "title": "Racing", "seq": 1})
+    out = get("/app/a/me/racing.md", session_cookie)
+    assert out["statusCode"] == 200
+    assert "Link to" in out["body"]
+    assert 'href="/app/a/racing"' in out["body"]
+    assert mints() == [(SUBJECT, "read", "/me/racing.md")]
+
+
+@pytest.mark.parametrize(
+    "target", ["https://wiki.acme.com/a/standards/torque.md", "/racing/../secret", ""]
+)
+def test_link_to_a_foreign_or_malformed_target_is_text_not_a_link(
+    session_cookie: str, grant: Callable[..., None], put_raw: Callable[..., str], target: str
+) -> None:
+    grant("/")
+    put_raw("/me/x.md", {"type": "link", "link_to": target, "title": "X", "seq": 1})
+    body = get("/app/a/me/x.md", session_cookie)["body"]
+    assert f"<code>{target}</code>" in body
+    assert f'href="{target}"' not in body
+    assert "/app/a/racing" not in body
+
+
 def test_tombstone_is_404(
     session_cookie: str, grant: Callable[..., None], put_raw: Callable[..., str]
 ) -> None:
