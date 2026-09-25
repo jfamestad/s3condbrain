@@ -11,3 +11,8 @@ cdk.context.json
 .env
 *.egg-info/
 .claude/
+
+# Operator-specific instance config (account ids, domains, client ids)
+infra/environments.toml
+.env.*
+!.env.example

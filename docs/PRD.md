@@ -148,7 +148,7 @@ sequenceDiagram
     O->>P: send connector URL + click path
     W->>P: invitation email (magic link)
     P->>W: sign in once in a browser
-    P->>C: add connector https://wiki.famestad.com/mcp
+    P->>C: add connector https://wiki.example.com/mcp
     C->>S: POST /mcp (no token)
     S-->>C: 401, resource_metadata
     C->>W: auth code + PKCE, resource=/mcp
@@ -227,7 +227,7 @@ The two risks that can change the shape of v1 are the WorkOS gate and the client
 | --- | --- | --- | --- |
 | WorkOS silently defaults the audience (gate check 4) | Every instance on the account shares one audience; isolation gone | Fail-closed install; Stytch or Descope substitute; nothing downstream changes | **Decided 23 Sep 2026** — check 4 passed: the unregistered resource was refused at `/token`, `HTTP 400 invalid_target`. Risk did not materialize |
 | CIMD not enabled in WorkOS staging | Gate cannot run; nothing deploys | Enabled; gate run 23 Sep 2026 against staging — checks 1, 3, 4, 5 and the AS-9 lifetime check passed. Check 6 (CIMD origin allowlist) does not exist in the WorkOS dashboard; check 7 self-signup is now disabled | **Done** |
-| No AWS development account on the build machine | Nothing deploys | Provision account 588747760390 credentials | Now |
+| No AWS development account on the build machine | Nothing deploys | Provision dev account credentials | Now |
 | Client constraints bound sharing | Free accounts hold one connector; managed-org members cannot self-serve; setup is web/desktop only | Design the invitation around "personal account, web or desktop, one instance"; defer everyone else | Before the invitation email |
 | Connector auth settings fixed once added | Swapping the authorization server means every user reconnects | Get the gate right before launch; at four people a swap is an afternoon | Launch |
 | Register and code have diverged | IDR-0005, ADR-0009 and ADR-0015 fund Cognito + AgentCore; the build is WorkOS + Lambda | Draft a superseding ADR and a Phase 1 bet; record IDR-0002's review | Before IDR-0005 review, 25 Sep |

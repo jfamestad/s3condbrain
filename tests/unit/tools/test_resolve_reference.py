@@ -21,7 +21,7 @@ from app.mcp.tools.resolve_reference import (
 )
 from tests.unit.tools.conftest import FakeMinter, call, expect_error
 
-LOCAL_ROOT = "https://wiki-dev.famestad.com"  # CANONICAL_MCP_URL minus /mcp (tests/conftest.py)
+LOCAL_ROOT = "https://wiki-dev.example.com"  # CANONICAL_MCP_URL minus /mcp (tests/conftest.py)
 LOCAL_URL = f"{LOCAL_ROOT}/a/racing/setup/rear-bar.md"
 FOREIGN_URL = "https://wiki.acme.com/a/standards/torque-spec.md"
 
@@ -111,7 +111,7 @@ def test_same_answer_for_every_caller(settings: Settings, minter: FakeMinter) ->
 
 
 def test_host_is_case_insensitive(ctx: ToolContext) -> None:
-    result = call(TOOL, ctx, url="https://WIKI-DEV.Famestad.com/a/x.md")
+    result = call(TOOL, ctx, url="https://WIKI-DEV.Example.com/a/x.md")
     assert result["local"] is True
     assert result["root"] == LOCAL_ROOT
 

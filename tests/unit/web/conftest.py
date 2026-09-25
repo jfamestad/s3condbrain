@@ -45,7 +45,7 @@ class FakeMinter:
 
 @pytest.fixture(autouse=True)
 def _web_env(monkeypatch: pytest.MonkeyPatch, bucket: Any, grant_table: Any) -> Iterator[None]:
-    monkeypatch.setenv("WEB_BASE_URL", "https://wiki-dev.famestad.com/app")
+    monkeypatch.setenv("WEB_BASE_URL", "https://wiki-dev.example.com/app")
     monkeypatch.setenv("WORKOS_CLIENT_ID", "client_01TEST")
     monkeypatch.setenv("WEB_SECRET_ARN", "")
     monkeypatch.setenv(
@@ -88,7 +88,7 @@ def event(
     form: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    hdrs = {"Host": "wiki-dev.famestad.com", **(headers or {})}
+    hdrs = {"Host": "wiki-dev.example.com", **(headers or {})}
     body = ""
     if form is not None:
         from urllib.parse import urlencode

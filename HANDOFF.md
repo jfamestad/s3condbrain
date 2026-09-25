@@ -1,6 +1,6 @@
 # Wiki Substrate — Engineering Handoff
 
-**Instance:** `wiki.famestad.com` · **Date:** 13 September 2026 · **Status:** v1 built (skeleton + increments A–G, 1,002 unit tests, synth-clean for dev and prod); **the §2 gate passed** against WorkOS staging on 23 September 2026 (checks 1, 3 and 4, plus the AS-9 token-lifetime check; check 5 was later retired the same day, see below and §6.5 — it tested a client type no user has; check 6 is unavailable in the WorkOS dashboard — see §2 note below; check 7 self-signup is now disabled) — **deployment remains blocked on an AWS development account**, and the authorizer itself is still unwritten
+**Instance:** `wiki.example.com` · **Date:** 13 September 2026 · **Status:** v1 built (skeleton + increments A–G, 1,002 unit tests, synth-clean for dev and prod); **the §2 gate passed** against WorkOS staging on 23 September 2026 (checks 1, 3 and 4, plus the AS-9 token-lifetime check; check 5 was later retired the same day, see below and §6.5 — it tested a client type no user has; check 6 is unavailable in the WorkOS dashboard — see §2 note below; check 7 self-signup is now disabled) — **deployment remains blocked on an AWS development account**, and the authorizer itself is still unwritten
 
 A deployable knowledge server: one permissioned, versioned tree of markdown articles per organization, managed by agents, reachable as a remote MCP server. What an instance is *for* is decided by what gets put in it.
 
@@ -59,8 +59,8 @@ Hundreds of articles today; nothing in the design forecloses ten thousand. First
 **Nothing else in this document should begin until these checks pass.** They take about half an hour against a free WorkOS staging environment, and `scripts/oauth_gate.py` runs checks 1, 3 and 4 as one command (two browser rounds) and prints reminders for the rest. Checks 1–4 are the gate proper and the fourth one can reverse the entire authorization decision; checks 6 and 7 confirm assumptions the rest of the design leans on; check 5 is retired (below). Run them against the **development** instance URL (§9.6) — production is registered separately at increment G.
 
 1. **Metadata.** Fetch the AuthKit authorization-server metadata. Confirm it advertises **both** `client_id_metadata_document_supported: true` **and** `none` in `token_endpoint_auth_methods_supported`. Claude requires both to select CIMD; with either missing it silently falls back to hunting for a registration endpoint.
-2. **Registration.** Register `https://wiki-dev.famestad.com/mcp` as a resource indicator.
-3. **Round trip.** Complete an authorization-code + PKCE flow with `resource=https://wiki-dev.famestad.com/mcp`. Decode the access token. `aud` MUST be exactly that string.
+2. **Registration.** Register `https://wiki-dev.example.com/mcp` as a resource indicator.
+3. **Round trip.** Complete an authorization-code + PKCE flow with `resource=https://wiki-dev.example.com/mcp`. Decode the access token. `aud` MUST be exactly that string.
 4. **Negative case.** Request a token for a resource URI that was **not** registered. It MUST be **refused**.
 5. **Scopes — retired (ADR-0016, 23 September 2026).** Used to require the token from check 3 to carry `wiki.read` and `wiki.write`. Withdrawn: WorkOS issues scopes only from permissions assigned per-application in its dashboard, and a client registered by Client ID Metadata Document — how Claude registers, and what AS-8 requires — is read-only there, with no Scopes section to assign them from. Verified by reproducing Claude's real authorization request: `scope=wiki.read wiki.write` returns `error=invalid_scope`, while `openid profile email` proceeds. This check tested a client type no user has; see §6.5.
 6. **CIMD allowlist.** The dashboard can restrict which client-metadata origins are accepted. **Checked 23 September 2026: it cannot** — the MCP Auth dialog offers only Dynamic Client Registration and Client ID Metadata Document, no origin allowlist — so §4.9's last row is a wish rather than a control, not a gap in configuration.
@@ -195,10 +195,10 @@ These are the contract. Implement them literally.
 An instance publishes protected resource metadata under its root and derives its canonical resource URI from it. That URI is the audience of every token the instance accepts.
 
 ```
-root                https://wiki.famestad.com
-MCP endpoint        https://wiki.famestad.com/mcp
-resource metadata   https://wiki.famestad.com/.well-known/oauth-protected-resource/mcp
-canonical resource  https://wiki.famestad.com/mcp
+root                https://wiki.example.com
+MCP endpoint        https://wiki.example.com/mcp
+resource metadata   https://wiki.example.com/.well-known/oauth-protected-resource/mcp
+canonical resource  https://wiki.example.com/mcp
 ```
 
 **Fail closed.** Provisioning MUST treat a failed resource registration as a failed install, and the resource server MUST assert that `aud` equals its own canonical URI exactly — never merely that the token verified.
@@ -711,7 +711,7 @@ Customise the API-level `UNAUTHORIZED` gateway response. **The authorizer trigge
 
 ```
 UNAUTHORIZED (401)
-  WWW-Authenticate:                 'Bearer resource_metadata="https://wiki.famestad.com/
+  WWW-Authenticate:                 'Bearer resource_metadata="https://wiki.example.com/
                                      .well-known/oauth-protected-resource/mcp", scope="wiki.read"'
   Access-Control-Allow-Origin:      'https://claude.ai'
   Access-Control-Expose-Headers:    'WWW-Authenticate'
@@ -753,8 +753,8 @@ The reasoning is §4.8's: the strongest guarantee that a development mistake can
 Each environment is a complete instance with its own domain, bucket, table, key and — the part that surprises people — **its own canonical resource URI and its own registered resource at the authorization server** (AS-7). A development instance whose resource registration silently failed would issue tokens against a default audience, and the resulting confusion would be blamed on anything but that.
 
 ```
-prod   https://wiki.famestad.com/mcp
-dev    https://wiki-dev.famestad.com/mcp
+prod   https://wiki.example.com/mcp
+dev    https://wiki-dev.example.com/mcp
 ```
 
 **Development data is synthetic.** Family records never enter the development account — not for debugging, not temporarily, not "just this once to reproduce something."
@@ -1538,7 +1538,7 @@ Automate §12.8 as `tests/security/`. The route table. Zero-grant user sees noth
 
 **Explicitly out:** no web application · no search · no move, archive, unarchive, or history · no listing projection (`list_folder` reads `ListObjectsV2` directly and returns paths without titles) · no second user · no production account.
 
-> **Done looks like:** you add `https://wiki-dev.famestad.com/mcp` as a custom connector in Claude Desktop, it completes CIMD registration and consent without you pasting anything, and you ask Claude to write an article and read it back. **Then you decode the access token by hand and confirm its `aud` is exactly your canonical MCP URL.**
+> **Done looks like:** you add `https://wiki-dev.example.com/mcp` as a custom connector in Claude Desktop, it completes CIMD registration and consent without you pasting anything, and you ask Claude to write an article and read it back. **Then you decode the access token by hand and confirm its `aud` is exactly your canonical MCP URL.**
 >
 > That last step is the point of the whole exercise. Everything after it is easier.
 
@@ -1715,7 +1715,7 @@ Recorded so none of these come back looking attractive in six months. Each was e
 | **Cognito behind a shim that *is* the authorization server** | **Deferred, not rejected.** The shim owns `/authorize` and `/token`, mints its own correctly-audienced tokens, and demotes Cognito to upstream OIDC login. Sound, and the right design *if the substrate must own its authorization server*. Preserves the per-tenant story better than any hosted option. Costs three to five weeks of security-critical work. **The leading candidate for the productized configuration.** |
 | DCR bridge provisioning a Cognito app client per registration | One thousand app clients per pool, **ten thousand as an unadjustable maximum**, `CreateUserPoolClient` limited to five requests per second — and Claude registers a new client on every fresh connection. The ceiling cannot be raised past. |
 | Bedrock AgentCore Gateway | Not an authorization server. Invokes Lambda targets with **its own service role** and a context object containing no subject, no token and no claims; the `Authorization` header cannot be allowlisted — so the substrate would be blind to who is calling and could not mint per-user credentials at all. Origin validation (a MUST) could not be confirmed or added. Its protected resource metadata returns the gateway's own domain, which AWS documents as a known gap. |
-| Bedrock AgentCore Runtime | Does hand the end user's token to the code it hosts and passes MCP through untouched. But its endpoint is a region-scoped encoded-ARN URL with no custom domain, it provides neither DCR nor CIMD, and it does not replace the authorization server. Reaching `wiki.famestad.com/mcp` means a CloudFront layer anyway — at which point it buys container hosting, not auth. |
+| Bedrock AgentCore Runtime | Does hand the end user's token to the code it hosts and passes MCP through untouched. But its endpoint is a region-scoped encoded-ARN URL with no custom domain, it provides neither DCR nor CIMD, and it does not replace the authorization server. Reaching `wiki.example.com/mcp` means a CloudFront layer anyway — at which point it buys container hosting, not auth. |
 | Keycloak | Its own documentation states resource indicators are unsupported and that it therefore only partially supports every MCP revision from 2025-06-18 onward. CIMD experimental. Operational burden high for four users. |
 | Auth0 | Proprietary `audience` wins over standard `resource` when both are present. |
 | Clerk | **Viable, not selected.** CIMD in beta behind a support request; resource indicators undocumented. Its client trust-policy UI is the best in the field and worth revisiting. |
@@ -1862,4 +1862,4 @@ These come from the client, not from us, and no amount of server work removes th
 
 ---
 
-*Engineering handoff · 13 September 2026 · Instance `wiki.famestad.com` · Builder: Josh*
+*Engineering handoff · 13 September 2026 · Instance `wiki.example.com` · Builder: Josh*

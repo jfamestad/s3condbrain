@@ -22,16 +22,16 @@ environments in separate accounts, and a deploy that lands in the wrong one is t
 failure this list is for.
 
 - [ ] **1. Account created and pinned.** The AWS account for this env exists and its
-      12-digit id is written into `infra/config.py` as `account=` for that env
-      ([§1](#1-aws-accounts-and-credentials), [§3](#3-infraconfigpy)). **Never `None`
+      12-digit id is written into `infra/environments.toml` as `account` for that env
+      ([§1](#1-aws-accounts-and-credentials), [§3](#3-infraconfigpy-and-infraenvironmentstoml)). **Never `None`
       for prod** — synth refuses. `dev` may float: `None` means whatever account the
       CLI's credentials resolve to.
 - [ ] **2. Credentials point at it.** `aws sts get-caller-identity` shows that account
       id — before any `make` command, every time ([§1](#1-aws-accounts-and-credentials)).
       If `account` is pinned and the credentials resolve elsewhere, synth stops with
-      `credentials resolve to account X but infra/config.py pins Y for env Z`.
+      `credentials resolve to account X but the config pins Y for env Z`.
 - [ ] **3. AuthKit domain and web client id filled in.** `authkit_domain` and
-      `workos_web_client_id` in `infra/config.py` for this env ([§3](#3-infraconfigpy);
+      `workos_web_client_id` in `infra/environments.toml` for this env ([§3](#3-infraconfigpy-and-infraenvironmentstoml);
       the WorkOS side is [§5](#5-workos-the-authorization-server) steps 1 and 9). An
       empty client id is a synth warning in dev and a synth **error** in prod.
 - [ ] **4. Magic Auth on, password login off.** WorkOS defaults to Email +
@@ -134,13 +134,21 @@ Pick one of the two routes `infra/stacks/api.py` supports:
   way. After the first deploy, create a CNAME (or ALIAS) from the hostname to the
   `DomainTarget` output of the api stack.
 
-## 3. `infra/config.py`
+## 3. `infra/config.py` and `infra/environments.toml`
 
-Per environment in `ENVIRONMENTS`:
+`infra/config.py` ships placeholders (`example.com`, a zero dev account). Your own
+values go in `infra/environments.toml`, which is gitignored: copy
+`infra/environments.example.toml`, fill in `account`, `domain`, `authkit_domain` and
+`workos_web_client_id` per environment, and any other field below you want to
+change. `load()` merges it over the placeholders; unknown keys are refused. Until the
+file exists, dev is pinned to `000000000000`, so synth against real credentials
+stops at the account guard rather than deploying placeholders.
+
+Per environment in `ENVIRONMENTS` (or its table in `environments.toml`):
 
 | Field | dev | prod |
 | --- | --- | --- |
-| `domain` | `wiki-dev.famestad.com` | `wiki.famestad.com` |
+| `domain` | `wiki-dev.example.com` | `wiki.example.com` |
 | `hosted_zone_name` | zone name, or `None` for the CERT_ARN route | same |
 | `authkit_domain` | the staging AuthKit domain | the **production** AuthKit domain — `REPLACE-ME` must be replaced |
 | `object_lock` | `False` | `True` (§8.2 — decided before the first prod deploy; see §8 below) |
@@ -155,10 +163,10 @@ Per environment in `ENVIRONMENTS`:
 checks it before any stack is built (`guard_account` in `infra/config.py`):
 
 - **prod must pin it.** `account=None` for prod refuses to synth at all, with a
-  message pointing at checklist step 1. Write the 12-digit id.
+  message pointing at checklist step 1. Write the 12-digit id in `environments.toml`.
 - **A pinned account must match the credentials.** The CDK CLI tells the app which
   account its credentials resolve to (`CDK_DEFAULT_ACCOUNT`); when that differs from
-  the pin, synth stops with `credentials resolve to account X but infra/config.py
+  the pin, synth stops with `credentials resolve to account X but the config
   pins Y for env Z`. This applies to any env that pins, dev included.
 - **dev may float.** `account=None` means the CLI's current account is used — which
   is what checklist step 2 is for.
@@ -198,7 +206,7 @@ Note the outputs; the later steps use them:
 | ops | `AlertsTopicArn`, `TrailArn`, `TrailLogBucketName`, `BackupVaultName`, `BreakGlassRoleArn` | runbook |
 
 Create the DNS record from `DomainTarget` (step 2) and wait for
-`curl -i https://wiki-dev.famestad.com/.well-known/oauth-protected-resource/mcp` to
+`curl -i https://wiki-dev.example.com/.well-known/oauth-protected-resource/mcp` to
 return the metadata document.
 
 ## 5. WorkOS (the authorization server)
@@ -208,7 +216,7 @@ decide whether WorkOS is acceptable at all (§2). In order:
 
 1. Create the WorkOS account; the staging environment exists immediately. Record the
    AuthKit domain (`https://<slug>.authkit.app`) — it is `authkit_domain` in
-   `infra/config.py`. If you set it after the first deploy, deploy again.
+   `infra/environments.toml`. If you set it after the first deploy, deploy again.
 2. Connect → Configuration: enable **CIMD**; leave DCR off (AS-8).
 3. Connect → Configuration: add `CanonicalMcpUrl` (exactly, byte for byte) as a
    **resource indicator** and make it the default. Dev and prod are registered
@@ -231,7 +239,7 @@ decide whether WorkOS is acceptable at all (§2). In order:
    uv run python scripts/oauth_gate.py \
      --authkit https://<slug>.authkit.app \
      --client-id client_01... \
-     --resource https://wiki-dev.famestad.com/mcp
+     --resource https://wiki-dev.example.com/mcp
    ```
 
    Check 4 (a token for an **unregistered** resource must be refused) decides
@@ -249,7 +257,7 @@ decide whether WorkOS is acceptable at all (§2). In order:
    fails with no explanation.
 9. **The web application's own client.** In WorkOS create a second OAuth client —
    confidential, authorization code + PKCE, redirect URI exactly
-   `https://<domain>/app/callback`. Put its client id in `infra/config.py`
+   `https://<domain>/app/callback`. Put its client id in `infra/environments.toml`
    (`workos_web_client_id`). After `make deploy`, open the secret named by the
    `WebSecretArn` output and replace the one `REPLACE-ME` value, `client_secret`,
    with that client's secret. `session_key` is generated for you; leave it. Until
@@ -271,7 +279,7 @@ stack `infra/stacks/certificate.py`).
 ```sh
 make cert-deploy ENV=dev        # requests the certificate; CloudFormation waits for validation
 make cert-status ENV=dev        # in another shell: prints Status and the validation CNAME
-# add the CNAME (name → value) at the DNS provider for famestad.com; wait for Status: ISSUED
+# add the CNAME (name → value) at the DNS provider for example.com; wait for Status: ISSUED
 ```
 
 The deploy completes on its own once ACM validates. The stack publishes the ARN to SSM
@@ -323,7 +331,7 @@ when they first sign in through the invitation email.
 ## 7. Add the connector
 
 In Claude (web or desktop — this step cannot start on a phone, §15.3): Settings →
-Connectors → Add custom connector → URL `https://wiki-dev.famestad.com/mcp`. Complete
+Connectors → Add custom connector → URL `https://wiki-dev.example.com/mcp`. Complete
 the consent screen. Also do it once from Claude Code, which is the surface most
 likely to surface a redirect-URI or client-authentication defect (§15.1 step 8).
 
@@ -334,7 +342,7 @@ contract, copied from `tests/security/README.md`:
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `WIKI_BASE_URL` | every HTTP test | Instance origin, no trailing slash — e.g. `https://wiki-dev.famestad.com`. Must be `https`. |
+| `WIKI_BASE_URL` | every HTTP test | Instance origin, no trailing slash — e.g. `https://wiki-dev.example.com`. Must be `https`. |
 | `WIKI_TEST_TOKEN` | tokens, zero-grant, item 8 | A live access token for the **bootstrap owner** (`own` on `/`), obtained through the §2 flow. |
 | `WIKI_TEST_TOKEN_NOGRANTS` | zero-grant | A live token for a **second user who holds zero grants**. Same AuthKit environment; no particular scope is required (ADR-0016 withdrew custom scopes). |
 | `WIKI_TEST_TOKEN_WRONG_AUD` | tokens (optional) | A genuine AuthKit token issued for a **different** resource indicator. Skipped when unset. |
@@ -348,7 +356,7 @@ secrets: export them for the shell that runs the suite and nothing else. **A ski
 never a pass** — read the summary line.
 
 ```sh
-export WIKI_BASE_URL=https://wiki-dev.famestad.com WIKI_TEST_TOKEN=... WIKI_TEST_TOKEN_NOGRANTS=... \
+export WIKI_BASE_URL=https://wiki-dev.example.com WIKI_TEST_TOKEN=... WIKI_TEST_TOKEN_NOGRANTS=... \
        WIKI_TEST_BUCKET=... WIKI_TEST_TABLE=... WIKI_TEST_REGION=us-west-2
 make security
 ```
@@ -380,7 +388,7 @@ Everything above, again, in the prod account, plus:
   them all in place; that is the point.
 - **A production WorkOS environment** (payment method required) with its own AuthKit
   domain (`authkit_domain` for prod), its own resource indicator registered for
-  `https://wiki.famestad.com/mcp`, and the §2 gate run again against it. A dev
+  `https://wiki.example.com/mcp`, and the §2 gate run again against it. A dev
   token must not validate against prod and cannot: the audience differs.
 - **Pin `account`** in the prod config — synth refuses without it (§3), and refuses
   when the credentials resolve to a different account.

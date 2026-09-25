@@ -28,7 +28,7 @@ from app.authorizer import handler
 from app.config import Settings
 
 ISSUER = "https://test.authkit.app"
-AUDIENCE = "https://wiki-dev.famestad.com/mcp"
+AUDIENCE = "https://wiki-dev.example.com/mcp"
 METHOD_ARN = "arn:aws:execute-api:us-west-2:123456789012:abc123/dev/POST/mcp"
 KID = "key-1"
 REQUEST_ID = "11111111-2222-3333-4444-555555555555"
@@ -152,7 +152,7 @@ def _assert_unauthorized(event: dict[str, Any]) -> None:
 
 
 def test_wrong_audience_is_unauthorized(jwks: FakeJWKSClient, rsa_key: RSAPrivateKey) -> None:
-    token = _sign(rsa_key, _claims(aud="https://wiki-prod.famestad.com/mcp"))
+    token = _sign(rsa_key, _claims(aud="https://wiki-prod.example.com/mcp"))
     _assert_unauthorized(_event(f"Bearer {token}"))
 
 

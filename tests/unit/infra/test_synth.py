@@ -259,9 +259,9 @@ def test_function_environment(dev: Synth) -> None:
         "RESOURCE_METADATA_URL",
         "LOG_LEVEL",
     }
-    assert auth_env["CANONICAL_MCP_URL"] == "https://wiki-dev.famestad.com/mcp"
+    assert auth_env["CANONICAL_MCP_URL"] == "https://wiki-dev.example.com/mcp"
     assert auth_env["RESOURCE_METADATA_URL"] == (
-        "https://wiki-dev.famestad.com/.well-known/oauth-protected-resource/mcp"
+        "https://wiki-dev.example.com/.well-known/oauth-protected-resource/mcp"
     )
     assert auth_env["JWKS_URL"] == auth_env["AUTHKIT_DOMAIN"] + "/oauth2/jwks"
     assert set(mcp_env) >= set(auth_env) | {
@@ -487,7 +487,7 @@ def test_gateway_responses(dev: Synth) -> None:
     assert unauthorized["StatusCode"] == "401"
     assert unauthorized["ResponseParameters"] == {
         "gatewayresponse.header.WWW-Authenticate": (
-            "'Bearer resource_metadata=\"https://wiki-dev.famestad.com"
+            "'Bearer resource_metadata=\"https://wiki-dev.example.com"
             "/.well-known/oauth-protected-resource/mcp\"'"
         ),
         "gatewayresponse.header.Access-Control-Allow-Origin": "'https://claude.ai'",
@@ -597,7 +597,7 @@ def test_mcp_cors_preflight(dev: Synth) -> None:
 def test_protected_resource_metadata_documents(dev: Synth) -> None:
     methods = _methods(dev)
     expected = {
-        "resource": "https://wiki-dev.famestad.com/mcp",
+        "resource": "https://wiki-dev.example.com/mcp",
         "authorization_servers": [load("dev").authkit_domain],
         "bearer_methods_supported": ["header"],
     }
@@ -616,7 +616,7 @@ def test_protected_resource_metadata_documents(dev: Synth) -> None:
 
 def test_custom_domain_from_certificate_arn(dev: Synth) -> None:
     domain = _only(dev.api, "AWS::ApiGateway::DomainName")["Properties"]
-    assert domain["DomainName"] == "wiki-dev.famestad.com"
+    assert domain["DomainName"] == "wiki-dev.example.com"
     assert domain["RegionalCertificateArn"] == CERT_ARN
     assert domain["SecurityPolicy"] == "TLS_1_2"
     assert domain["EndpointConfiguration"] == {"Types": ["REGIONAL"]}
@@ -678,7 +678,7 @@ def test_budget(dev: Synth, tmp_path: Path) -> None:
 def test_outputs(dev: Synth) -> None:
     outputs = dev.api["Outputs"]
     assert {"ApiUrl", "CanonicalMcpUrl", "ResourceMetadataUrl", "DomainTarget"} <= set(outputs)
-    assert outputs["CanonicalMcpUrl"]["Value"] == "https://wiki-dev.famestad.com/mcp"
+    assert outputs["CanonicalMcpUrl"]["Value"] == "https://wiki-dev.example.com/mcp"
     Template.from_stack(dev.api_stack).has_output("ResourceMetadataUrl", Match.object_like({}))
 
 
@@ -759,7 +759,7 @@ def test_prod_without_pinned_account_refuses_to_synth(
     with pytest.raises(SystemExit) as exc:
         build(_app("prod", tmp_path))
     message = str(exc.value)
-    assert "env 'prod' has account=None in infra/config.py" in message
+    assert "env 'prod' has account=None" in message
     assert "first-deploy checklist step 1" in message
     assert "-c prodAccount=" in message
 
@@ -784,8 +784,8 @@ def test_mismatched_cli_account_is_refused(tmp_path: Path, monkeypatch: pytest.M
     with pytest.raises(SystemExit) as exc:
         build(_app("prod", tmp_path, prodAccount=PROD_ACCOUNT))
     assert str(exc.value) == (
-        f"credentials resolve to account 111111111111 but infra/config.py pins "
-        f"{PROD_ACCOUNT} for env prod"
+        f"credentials resolve to account 111111111111 but the config pins "
+        f"{PROD_ACCOUNT} for env prod (infra/environments.toml)"
     )
     # Same rule for any env that pins: a pinned dev is refused the same way.
     pinned_dev = replace(load("dev"), account="222222222222")
@@ -833,3 +833,26 @@ def test_pinned_account_must_be_twelve_digits() -> None:
 def test_unknown_env_is_refused() -> None:
     with pytest.raises(SystemExit, match="unknown env 'staging'"):
         load("staging")
+
+
+def test_local_environments_file_overrides_placeholders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's gitignored file supplies real values; the repo holds placeholders."""
+    local = tmp_path / "environments.toml"
+    local.write_text(
+        '[dev]\naccount = "111111111111"\ndomain = "wiki-dev.corp.test"\n'
+        'allowed_origins = ["https://claude.ai", "https://x.test"]\n'
+    )
+    monkeypatch.setenv("WIKI_ENV_FILE", str(local))
+    dev = load("dev")
+    assert (dev.account, dev.domain) == ("111111111111", "wiki-dev.corp.test")
+    assert dev.allowed_origins == ("https://claude.ai", "https://x.test")
+    assert load("prod").domain == "wiki.example.com"
+
+    local.write_text('[dev]\nname = "prod"\n')
+    with pytest.raises(SystemExit, match=r"unknown or fixed keys \['name'\]"):
+        load("dev")
+    monkeypatch.setenv("WIKI_ENV_FILE", str(tmp_path / "missing.toml"))
+    with pytest.raises(SystemExit, match="does not exist"):
+        load("dev")
