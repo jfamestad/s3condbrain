@@ -40,7 +40,7 @@ jobs:
     name: lint · types · tests · build · synth
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -96,7 +96,7 @@ jobs:
     name: secret scan (history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # gitleaks-action needs a paid licence for organisation repositories; the CLI
