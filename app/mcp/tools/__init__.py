@@ -20,6 +20,7 @@ _MODULES = (
     "read_version",
     "create_article",
     "update_article",
+    "edit_article",
     "move_article",
     "archive_article",
     "unarchive_article",

@@ -134,17 +134,19 @@ def _byte_range_arg(args: dict[str, Any]) -> tuple[int, int] | None:
     return value[0], value[1]
 
 
-def extract_section(body: str, heading: str) -> str | None:
-    """The heading line and everything beneath it, up to the next heading of the
-    same or higher level. Headings inside fenced code blocks are ignored. Matched
-    case-insensitively on the heading text; ``None`` when no heading matches.
+def section_span(body: str, heading: str) -> tuple[int, int] | None:
+    """Character offsets ``(start, end)`` of a section in ``body``: from its heading
+    line up to the next heading of the same or higher level, or the end of the body.
+    Headings inside fenced code blocks are ignored. Matched case-insensitively on
+    the heading text; ``None`` when no heading matches.
     """
     wanted = heading.strip().casefold()
-    lines = body.splitlines(keepends=True)
     in_fence = False
     start: int | None = None
     level = 0
-    for index, line in enumerate(lines):
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        line_start, offset = offset, offset + len(line)
         if _FENCE_RE.match(line):
             in_fence = not in_fence
             continue
@@ -156,10 +158,18 @@ def extract_section(body: str, heading: str) -> str | None:
         depth = len(match.group(1))
         if start is None:
             if match.group(2).strip().casefold() == wanted:
-                start, level = index, depth
+                start, level = line_start, depth
         elif depth <= level:
-            return "".join(lines[start:index])
-    return None if start is None else "".join(lines[start:])
+            return start, line_start
+    return None if start is None else (start, len(body))
+
+
+def extract_section(body: str, heading: str) -> str | None:
+    """The heading line and everything beneath it, up to the next heading of the
+    same or higher level (``section_span``); ``None`` when no heading matches.
+    """
+    span = section_span(body, heading)
+    return None if span is None else body[span[0] : span[1]]
 
 
 def _forward_reference(article: Article) -> dict[str, Any]:
@@ -240,4 +250,4 @@ TOOL = Tool(
     handler=handle,
 )
 
-__all__ = ["TOOL", "extract_section", "handle"]
+__all__ = ["TOOL", "extract_section", "handle", "section_span"]
