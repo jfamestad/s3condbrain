@@ -24,6 +24,7 @@ from app.mcp.tools.create_article import TOOL as CREATE
 from app.mcp.tools.list_folder import TOOL as LIST
 from app.mcp.tools.move_article import TOOL as MOVE
 from app.mcp.tools.read_article import TOOL as READ
+from app.mcp.tools.search import TOOL as SEARCH
 from app.mcp.tools.unarchive_article import TOOL as UNARCHIVE
 from app.mcp.tools.update_article import TOOL as UPDATE
 from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
@@ -261,3 +262,50 @@ def test_move_keeps_a_link_a_link(ctx: ToolContext) -> None:
     out = call(READ, ctx, path=moved)
     assert out["kind"] == "link"
     assert out["link_to"] == "/racing"
+
+
+def test_a_link_grants_nothing(
+    make_ctx: Any, seed_grant: Any, ctx: ToolContext, minter: FakeMinter
+) -> None:
+    # The owner has content at /secret; the friend links to it without a grant.
+    call(
+        CREATE,
+        ctx,
+        path="/secret/plan.md",
+        frontmatter={"type": "doc", "title": "Plan"},
+        content="classified\n",
+    )
+    seed_grant(FRIEND, "/friend", Permission.WRITE)
+    friend = make_ctx(FRIEND)
+    _create_link(friend, "/secret", path="/friend/secret.md")
+    minter.calls.clear()
+
+    assert call(READ, friend, path="/friend/secret.md")["link_to"] == "/secret"
+    expect_error(READ, friend, 404, "not_found", path="/secret/plan.md")
+    expect_error(LIST, friend, 404, "not_found", path="/secret")
+    hits = call(SEARCH, friend, query="plan")["hits"]
+    assert all(not h["path"].startswith("/secret/") for h in hits)
+    # No credential was ever minted for the target.
+    assert all(not p.startswith("/secret") for _, _, p in minter.calls)
+
+
+def test_linking_needs_write_on_the_link_folder(
+    make_ctx: Any, seed_grant: Any, ctx: ToolContext
+) -> None:
+    seed_grant(FRIEND, "/racing", Permission.READ)
+    friend = make_ctx(FRIEND)
+    expect_error(
+        CREATE,
+        friend,
+        403,
+        "forbidden",
+        path="/racing/mine.md",
+        frontmatter={"type": "link", "link_to": "/racing"},
+        content="",
+    )
+
+
+def test_paths_under_a_link_do_not_resolve(ctx: ToolContext) -> None:
+    call(CREATE, ctx, path="/racing/setup.md", frontmatter={"type": "doc"}, content="x\n")
+    _create_link(ctx, "/racing")  # /me/racing.md
+    expect_error(LIST, ctx, 404, "not_found", path="/me/racing")
