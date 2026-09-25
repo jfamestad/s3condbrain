@@ -3,6 +3,8 @@ name = "wiki-substrate"
 version = "0.1.0"
 description = "Permissioned, versioned markdown tree served as a remote MCP server."
 requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     "boto3>=1.35",
     "pydantic>=2.9",
