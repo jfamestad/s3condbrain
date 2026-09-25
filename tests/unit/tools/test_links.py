@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -173,3 +174,11 @@ def test_read_link_returns_reference_and_reads_nothing_at_target(
 def test_read_descriptor_advertises_link_variant() -> None:
     kinds = [v["properties"]["kind"].get("const") for v in READ.output_schema["oneOf"][1:]]
     assert "link" in kinds
+
+
+def test_read_raw_link_without_target_is_a_link_with_empty_target(
+    ctx: ToolContext, put_raw: Callable[..., str]
+) -> None:
+    put_raw(LINK_PATH, {"type": "link"})
+    out = call(READ, ctx, path=LINK_PATH)
+    assert out == {"kind": "link", "path": LINK_PATH, "link_to": "", "note": out["note"]}

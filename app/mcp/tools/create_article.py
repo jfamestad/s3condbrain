@@ -44,7 +44,8 @@ DESCRIPTION = (
     "Create a new article. Fails if anything already occupies the path, including a "
     "move pointer or an archive tombstone — a vacated path is retired permanently, and "
     "an archived one is restored with unarchive_article rather than overwritten. "
-    "Ancestor folders are created implicitly."
+    "Ancestor folders are created implicitly. To link a shared folder or article into "
+    "your tree, create an article with type 'link' and 'link_to'."
 )
 
 INPUT_SCHEMA: dict[str, Any] = {

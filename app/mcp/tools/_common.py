@@ -483,8 +483,19 @@ FRONTMATTER_SCHEMA: dict[str, Any] = {
         "type": {
             "type": "string",
             "description": (
-                "OKF concept type. Starting vocabulary is 'doc'. 'pointer' and "
-                "'archived' are server-written and rejected on input."
+                "OKF concept type. Starting vocabulary is 'doc'. 'link' makes the "
+                "article a link to 'link_to' (it grants nothing; readers get a one-hop "
+                "reference). 'pointer' and 'archived' are server-written and rejected "
+                "on input."
+            ),
+        },
+        "link_to": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": (
+                "Links only (type 'link'): the target — an article path, a folder path, "
+                "or 'https://<host>/a/<article path>'. Required on a link, rejected on "
+                "anything else."
             ),
         },
         "title": {"type": "string", "maxLength": 200},

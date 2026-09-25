@@ -47,7 +47,8 @@ from app.storage.markdown import parse
 DESCRIPTION = (
     "Replace the body, and optionally the frontmatter, of an existing article. Requires "
     "the version from your most recent read; a mismatch writes nothing and returns the "
-    "current state."
+    "current state. To link a shared folder or article into your tree, create an "
+    "article with type 'link' and 'link_to'."
 )
 
 INPUT_SCHEMA: dict[str, Any] = {
