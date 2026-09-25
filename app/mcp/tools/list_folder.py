@@ -88,22 +88,33 @@ def render(folder: str, listing: Listing) -> dict[str, Any]:
     }
 
 
-def _reachable(ctx: ToolContext, target: str) -> bool:
-    """Whether the caller holds ``read`` on a local link target — a grant lookup only.
+def _mark_resolved(ctx: ToolContext, articles: list[dict[str, Any]]) -> None:
+    """Set ``resolved`` on every local link: whether the caller holds ``read`` on its
+    target — a grant lookup only, never a read at the target.
+
+    All targets resolve in one batched lookup. Each resolution shaped the response,
+    so each is noted for the audit line (AS-10); a target with no matching grant
+    notes nothing. A stored target a raw write left malformed is simply unresolved.
 
     Args:
         ctx: The calling context.
-        target: A stored ``link_to`` value, which a raw write may have left malformed.
-
-    Returns:
-        True when the caller can read the target; False otherwise, including when the
-        stored target is not a valid path.
+        articles: The rendered summaries, updated in place.
     """
-    try:
-        link_target(target)
-    except ToolError:
-        return False
-    return ctx.grants.resolve(ctx.subject, target).allows(Permission.READ)
+    links: list[tuple[dict[str, Any], str | None]] = []
+    for summary in articles:
+        target = summary.get("link_to")
+        if target is None or not is_local(target):
+            continue
+        try:
+            links.append((summary, link_target(target)))
+        except ToolError:
+            links.append((summary, None))
+    valid = [target for _summary, target in links if target is not None]
+    resolutions = ctx.grants.resolve_many(ctx.subject, valid) if valid else {}
+    for resolution in resolutions.values():
+        ctx.audit.note(resolution)
+    for summary, target in links:
+        summary["resolved"] = target is not None and resolutions[target].allows(Permission.READ)
 
 
 def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -124,12 +135,7 @@ def handle(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise not_found() from None
 
     result = render(path, listing)
-    for summary in result["articles"]:
-        target = summary.get("link_to")
-        if target is not None and is_local(target):
-            # A grant lookup only: nothing is read at the target, and no access
-            # decision is taken, so nothing is recorded for the audit line.
-            summary["resolved"] = _reachable(ctx, target)
+    _mark_resolved(ctx, result["articles"])
     if path != ROOT and not result["folders"] and not result["articles"]:
         # Nothing visible here: a folder that does not exist, or one holding only
         # pointers and tombstones. Both read as absence (§10.4).

@@ -228,9 +228,37 @@ def test_resolving_a_link_touches_nothing_at_the_target(
     minter.calls.clear()
     [link] = call(LIST, friend, path="/friend")["articles"]
     assert link["resolved"] is True
-    # A grant lookup only: no credential for the target, no audited decision on it.
+    # A grant lookup only: no credential for the target. The lookup shaped the
+    # response, so it is on the audit line (AS-10) like every other resolution.
     assert [path for _subject, _shape, path in minter.calls] == ["/friend"]
-    assert ("/racing", Permission.READ.value) not in friend.audit.grants_used
+    assert ("/racing", Permission.READ.value) in friend.audit.grants_used
+
+
+def test_links_in_a_folder_resolve_in_one_lookup(
+    ctx: ToolContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    targets = ["/racing", "/cooking", "/secret/x.md"]
+    for i, target in enumerate(targets):
+        _create_link(ctx, target, path=f"/me/link{i}.md")
+    calls: list[list[str]] = []
+    real = ctx.grants.resolve_many
+
+    def spy(subject: str, paths: Any) -> Any:
+        calls.append(list(paths))
+        return real(subject, calls[-1])
+
+    monkeypatch.setattr(ctx.grants, "resolve_many", spy)
+    articles = call(LIST, ctx, path="/me")["articles"]
+    assert sorted(calls[0]) == sorted(targets)
+    assert len(calls) == 1
+    assert all(a["resolved"] is True for a in articles)
+
+
+def test_search_hit_for_a_link_carries_target_but_not_resolved(ctx: ToolContext) -> None:
+    _create_link(ctx, "/racing")
+    [hit] = [h for h in call(SEARCH, ctx, query="racing")["hits"] if h["path"] == LINK_PATH]
+    assert hit["link_to"] == "/racing"
+    assert "resolved" not in hit
 
 
 def test_malformed_stored_target_lists_as_unresolved(

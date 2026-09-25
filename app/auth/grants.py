@@ -143,11 +143,18 @@ class GrantStore:
         Depth bounds the key count, but keys are chunked to the API's 100-key limit
         anyway. Unprocessed keys are retried with exponential backoff.
         """
+        return self._grants_on(subject, ancestors(path))
+
+    def _grants_on(self, subject: str, nodes: Iterable[str]) -> list[Grant]:
+        """The subject's grant rows on exactly ``nodes`` — ``[]`` when disabled.
+
+        One BatchGetItem per 100 keys; duplicate nodes are fetched once.
+        """
         pk = f"{_SUBJECT_PREFIX}{subject}"
         # The PROFILE row shares the partition key, so it rides in the same batch:
         # a disabled person resolves to nothing, on every request, for free (§12.9).
         keys = [{"pk": pk, "sk": _PROFILE_SK}]
-        keys += [{"pk": pk, "sk": node} for node in ancestors(path)]
+        keys += [{"pk": pk, "sk": node} for node in dict.fromkeys(nodes)]
         items: list[dict[str, Any]] = []
         for start in range(0, len(keys), _BATCH_GET_LIMIT):
             items.extend(self._batch_get(keys[start : start + _BATCH_GET_LIMIT]))
@@ -171,6 +178,31 @@ class GrantStore:
     def resolve(self, subject: str, path: str) -> Resolution:
         """``effective(self.grants_for(subject, path), path)``."""
         return effective(self.grants_for(subject, path), path)
+
+    def resolve_many(self, subject: str, paths: Iterable[str]) -> dict[str, Resolution]:
+        """``resolve`` for several paths at once, from one batched lookup.
+
+        The union of every path's ancestors is fetched together (they share the
+        subject's partition), chunked to the 100-key limit, with the PROFILE row in
+        the batch exactly as in ``grants_for``: a disabled person resolves every path
+        to nothing.
+
+        Args:
+            subject: Token ``sub``.
+            paths: Absolute paths to resolve.
+
+        Returns:
+            ``{path: Resolution}``, equal path by path to ``resolve(subject, path)``.
+            No paths, no request.
+
+        Raises:
+            ValueError: when a path is not a valid absolute path (see ``ancestors``).
+        """
+        wanted = list(dict.fromkeys(paths))
+        if not wanted:
+            return {}
+        grants = self._grants_on(subject, (node for p in wanted for node in ancestors(p)))
+        return {p: effective(grants, p) for p in wanted}
 
     def require(self, subject: str, path: str, needed: Permission) -> Resolution:
         """Resolve and raise ``ToolError(403, "forbidden")`` unless ``needed`` is satisfied.

@@ -371,3 +371,61 @@ class TestDisabledProfile:
         assert store.grant_rows("user_d") == [g]
         assert store.all_grants("user_d") == []
         assert store.grants_for("user_d", "/racing/x.md") == []
+
+
+class TestResolveMany:
+    """``resolve_many``: one batched lookup that answers exactly as ``resolve`` would,
+    path by path (list_folder's link ``resolved`` flags)."""
+
+    def test_matches_resolve_path_by_path(self, store: GrantStore) -> None:
+        store.put_grant(_grant("/racing", Permission.READ))
+        store.put_grant(_grant("/cooking/pie.md", Permission.WRITE))
+        store.put_grant(_grant("/racing/setup", Permission.WRITE))
+        paths = [
+            "/racing",
+            "/racing/setup/rear-bar.md",
+            "/cooking/pie.md",
+            "/cooking/cake.md",
+            "/cooking",
+            "/secret",
+        ]
+        many = store.resolve_many(SUBJECT, paths)
+        assert many == {p: store.resolve(SUBJECT, p) for p in paths}
+        assert many["/secret"] == Resolution(None, ())
+        assert many["/cooking"] == Resolution(None, ())  # an article grant does not climb
+
+    def test_no_paths_makes_no_request(self, store: GrantStore) -> None:
+        calls: list[Any] = []
+        real = store._resource.batch_get_item
+        store._resource.batch_get_item = lambda **kw: calls.append(kw) or real(**kw)
+        assert store.resolve_many(SUBJECT, []) == {}
+        assert calls == []
+
+    def test_more_than_one_batch_of_keys_is_chunked(self, store: GrantStore) -> None:
+        store.put_grant(_grant("/t149", Permission.READ))
+        store.put_grant(_grant("/t3", Permission.WRITE))
+        paths = [f"/t{i}" for i in range(150)]  # 150 nodes + "/" + PROFILE
+        sizes: list[int] = []
+        real = store._resource.batch_get_item
+
+        def spy(**kw: Any) -> Any:
+            sizes.extend(len(v["Keys"]) for v in kw["RequestItems"].values())
+            return real(**kw)
+
+        store._resource.batch_get_item = spy
+        many = store.resolve_many(SUBJECT, paths)
+        assert sizes == [100, 52]
+        assert many["/t149"].permission is Permission.READ
+        assert many["/t3"].permission is Permission.WRITE
+        assert many["/t0"].permission is None
+
+    def test_disabled_profile_resolves_every_path_to_nothing(
+        self, grant_table: Any, store: GrantStore
+    ) -> None:
+        store.put_grant(Grant("user_d", "/", Permission.OWN))
+        grant_table.put_item(
+            Item={"pk": "U#user_d", "sk": "PROFILE", "email": "d@x", "status": "disabled"}
+        )
+        many = store.resolve_many("user_d", ["/racing", "/x.md"])
+        assert all(r.permission is None for r in many.values())
+        assert set(many) == {"/racing", "/x.md"}

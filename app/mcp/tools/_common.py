@@ -558,8 +558,9 @@ ARTICLE_SUMMARY_SCHEMA: dict[str, Any] = {
         "resolved": {
             "type": "boolean",
             "description": (
-                "Local links only: whether you can read the target now. False means "
-                "the share was revoked or never existed — the link's owner removes it."
+                "list_folder only, local links only: whether you hold read on the "
+                "target right now (a grant check — the target may still not exist). "
+                "Absent from search hits."
             ),
         },
     },
