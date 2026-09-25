@@ -19,9 +19,12 @@ from app.mcp.tools._links import (
     link_reference,
     link_target,
 )
+from app.mcp.tools.archive_article import TOOL as ARCHIVE
 from app.mcp.tools.create_article import TOOL as CREATE
 from app.mcp.tools.list_folder import TOOL as LIST
+from app.mcp.tools.move_article import TOOL as MOVE
 from app.mcp.tools.read_article import TOOL as READ
+from app.mcp.tools.unarchive_article import TOOL as UNARCHIVE
 from app.mcp.tools.update_article import TOOL as UPDATE
 from tests.unit.tools.conftest import OWNER, FakeMinter, call, expect_error
 
@@ -236,3 +239,25 @@ def test_malformed_stored_target_lists_as_unresolved(
     [link] = call(LIST, ctx, path="/me")["articles"]
     assert link["link_to"] == "/racing/../secret"
     assert link["resolved"] is False
+
+
+def test_archive_removes_a_dead_link(ctx: ToolContext) -> None:
+    version = _create_link(ctx)["version"]
+    call(ARCHIVE, ctx, path=LINK_PATH, if_version=version)
+    expect_error(READ, ctx, 404, "not_found", path=LINK_PATH)
+
+
+def test_unarchive_restores_a_link(ctx: ToolContext) -> None:
+    version = _create_link(ctx)["version"]
+    archived = call(ARCHIVE, ctx, path=LINK_PATH, if_version=version)
+    call(UNARCHIVE, ctx, path=LINK_PATH, if_version=archived["version"])
+    assert call(READ, ctx, path=LINK_PATH)["kind"] == "link"
+
+
+def test_move_keeps_a_link_a_link(ctx: ToolContext) -> None:
+    version = _create_link(ctx)["version"]
+    moved = "/me/shared/racing.md"
+    call(MOVE, ctx, **{"from": LINK_PATH, "to": moved, "if_version": version})
+    out = call(READ, ctx, path=moved)
+    assert out["kind"] == "link"
+    assert out["link_to"] == "/racing"
