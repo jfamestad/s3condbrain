@@ -15,7 +15,7 @@ flowchart LR
     C -->|3. POST /mcp, bearer| G
     G --> A[Authorizer Lambda<br/>JWKS, iss, aud, exp]
     A --> G
-    G --> D[Data plane Lambda<br/>12 tools]
+    G --> D[Data plane Lambda<br/>14 tools]
     D -->|AssumeRole, session policy<br/>subject + prefix + permission| S[(S3 versioned<br/>articles)]
     D -->|read only| T[(DynamoDB<br/>grants)]
     X[Admin web app<br/>interactive session] -->|write| T
@@ -173,7 +173,7 @@ API Gateway REST API, regional, with a Lambda REQUEST authorizer in front of a L
 | Function | Does | Role holds |
 | --- | --- | --- |
 | Authorizer (`app/authorizer/`) | Validates the JWT: `PyJWT` with algorithm, issuer, audience and expiry pinned; passes `sub` and `scope` as context; result cache TTL 0 | CloudWatch Logs only |
-| Data plane (`app/mcp/`, `app/auth/`, `app/storage/`) | Transport, `server/discover`, header and origin checks, the twelve tools; resolves grants; mints credentials | Read-only on the grant table; `sts:AssumeRole` on the storage role; no S3 of its own |
+| Data plane (`app/mcp/`, `app/auth/`, `app/storage/`) | Transport, `server/discover`, header and origin checks, the fourteen tools; resolves grants; mints credentials | Read-only on the grant table; `sts:AssumeRole` on the storage role; no S3 of its own |
 | Web application (`app/web/`) | Login and consent via its own confidential AuthKit client (ID token, access token discarded); read view; admin console; audit log; break-glass runbook | Data plane's plus grant-table writes: the only role that can change a grant |
 
 The web app's session is a signed `__Host-` cookie (12 h), checked per request against the PROFILE row so disabling a person takes effect on their next click; a `session_epoch` on the PROFILE makes "sign out everywhere" immediate. It holds no WorkOS management API key: the operator creates people in the WorkOS dashboard, and the console records the resulting id, PROFILE row and initial grant. Markdown renders with HTML disabled.
@@ -230,11 +230,12 @@ There is no longer an HTTP-level scope failure (ADR-0016): the only HTTP-before-
 
 ## Tool contract
 
-Twelve tools, seven reads and five writes; every read is a search or a targeted fetch, so the retrieval layer can be swapped without changing this table. Schemas are in HANDOFF §10 with the `$defs` block inlined into every tool, because MCP clients do not resolve `$ref` across documents.
+Fourteen tools, eight reads and six writes; every read is a search or a targeted fetch, so the retrieval layer can be swapped without changing this table. Schemas are in HANDOFF §10 with the `$defs` block inlined into every tool, because MCP clients do not resolve `$ref` across documents.
 
 | Tool | Arguments | Scope | Permission | S3 verbs |
 | --- | --- | --- | --- | --- |
 | `search` | `query, prefix?, limit?` | `wiki.read` | `read` on each hit | Listing walk under folder grants; ranged `GetObject` for article grants |
+| `search_and_read` | `query, prefix?, k?, section?, max_bytes?` | `wiki.read` | `read` on each hit; each read checked as `read_article` | `search`'s, then `read_article`'s per hit read; references are not followed |
 | `list_folder` | `path` | `wiki.read` | `read` on path | `GetObject` on `_listing.json`; `ListObjectsV2` plus `HeadObject` per child to rebuild |
 | `read_article` | `path, section?, byte_range?` | `wiki.read` | `read` | `GetObject`; a pointer body becomes a forward reference, a link body a `link` reference, an archived body `404` |
 | `resolve_reference` | `url` | none | none | none; parses a string and says whether this instance is the target |
@@ -243,13 +244,14 @@ Twelve tools, seven reads and five writes; every read is a search or a targeted 
 | `shared_with_me` | none | `wiki.read` | none; the caller's own grant rows | none; one DynamoDB `Query` on the caller's partition |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor | `PutObject If-None-Match: *` |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` | `PutObject If-Match` |
+| `edit_article` | `path, if_version, edits?, frontmatter?` | `wiki.write` | `write` | `GetObject`; `PutObject If-Match` (the edits apply in memory) |
 | `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; `boundary_change` if anyone gains | `HeadObject to`; pointer `PutObject If-Match`; `GetObject`; `PutObject to If-None-Match: *` |
 | `archive_article` | `path, if_version` | `wiki.write` | `write` | `PutObject` tombstone `If-Match` |
 | `unarchive_article` | `path, if_version?` | `wiki.write` | `write` | `GetObject?versionId=` then `PutObject` restoring version `If-Match` |
 
-**Conventions.** Path is identity: absolute, lowercase, `.md`-suffixed; strip the suffix for the OKF concept id. `version` is the ETag, opaque, returned by every read, required by every mutating call as `if_version`, compared verbatim after stripping quotes, never parsed. A read landing on a pointer returns one `forward_reference` and stops. `frontmatter` replaces rather than merges; omit it to leave frontmatter alone. Listings and search return only what the caller may see, never a denial marker.
+**Conventions.** Path is identity: absolute, lowercase, `.md`-suffixed; strip the suffix for the OKF concept id. `version` is the ETag, opaque, returned by every read, required by every mutating call as `if_version`, compared verbatim after stripping quotes, never parsed. A read landing on a pointer returns one `forward_reference` and stops. On `update_article`, `frontmatter` replaces rather than merges; omit it to leave frontmatter alone. `edit_article` merges fields, `null` removing one. Listings and search return only what the caller may see, never a denial marker.
 
-**Error envelope.** Tool errors are `isError: true` with `structuredContent` carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip. Authentication failure is not in this envelope; it is HTTP.
+**Error envelope.** Tool errors are `isError: true` with `structuredContent` carrying `status`, `code`, `message` (written for a person), and for `409` the `current_version` and `current_body` so the agent can merge and retry without a second round trip (`edit_article` returns `edits_apply` instead of the body). Authentication failure is not in this envelope; it is HTTP.
 
 | Status | Code | Meaning | Retry? |
 | --- | --- | --- | --- |
@@ -323,7 +325,7 @@ The decisions that shape this architecture live in two places that disagree: the
 | ADR-0009: Cognito user pool as IdP, personas as Cognito groups, DCR via a thin façade | WorkOS AuthKit as authorization server; substrate is a pure resource server; CIMD, no DCR | Superseding ADR |
 | ADR-0015 and IDR-0005: AgentCore Gateway over Lambda targets, request-interceptor Lambda, pre-registered clients | API Gateway REST with a Lambda authorizer and a Lambda data plane; no AgentCore | Superseding ADR; IDR-0005 re-scoped or superseded before its 25 Sep review |
 | ADR-0010: versioned S3 plus a DynamoDB index family plus Bedrock KB on S3 Vectors | Versioned S3 plus one DynamoDB grant table; no index family; search is metadata over listings; KB deferred by IDR-0004 | Amending ADR |
-| ADR-0003: nine thin primitives (`read_page`, `write_page`, `list_pages`, `grep`, …) served by the stdio shim | Twelve tools over streamable HTTP; no shim on the v1 path | Superseding ADR |
+| ADR-0003: nine thin primitives (`read_page`, `write_page`, `list_pages`, `grep`, …) served by the stdio shim | Fourteen tools over streamable HTTP; no shim on the v1 path | Superseding ADR |
 | ADR-0014: personas grant scoped read to groups; guests, not replicas | One principal kind, positional grants per user, no groups in the grant model | Amending ADR |
 | The "Authorization Server ADR, Builder, 13 Sep 2026" cited as a handoff source | Not in the register | File it |
 

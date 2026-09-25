@@ -11,7 +11,7 @@ touch it. Where code and document disagree, fix the code.
 | Path | What |
 | --- | --- |
 | `app/authorizer/` | API Gateway REQUEST authorizer — JWT validation, nothing else |
-| `app/mcp/` | MCP transport (`server.py`) and the twelve tools (`tools/`) |
+| `app/mcp/` | MCP transport (`server.py`) and the fourteen tools (`tools/`) |
 | `app/auth/` | Grant resolution, per-operation credential minting, grant administration, rate limits |
 | `app/storage/` | S3 reads and conditional writes, frontmatter, the listing projection |
 | `app/web/` | The web application: login, read view, admin console |

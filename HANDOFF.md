@@ -763,11 +763,12 @@ dev    https://wiki-dev.famestad.com/mcp
 
 ## 10. Tool contract
 
-Twelve tools. The `$defs` block is the data model in schema form — everything the server stores appears there first.
+Fourteen tools. The `$defs` block is the data model in schema form — everything the server stores appears there first.
 
 | Tool | Arguments | Scope | Permission |
 | --- | --- | --- | --- |
 | `search` | `query, prefix?, limit?` | `wiki.read` | `read` on each hit |
+| `search_and_read` | `query, prefix?, k?, section?, max_bytes?` | `wiki.read` | `read` on each hit, then `read` on each hit read |
 | `list_folder` | `path` | `wiki.read` | `read` on path |
 | `read_article` | `path, section?, byte_range?` | `wiki.read` | `read` |
 | `resolve_reference` | `url` | — | — |
@@ -776,6 +777,7 @@ Twelve tools. The `$defs` block is the data model in schema form — everything 
 | `shared_with_me` | — | `wiki.read` | none; the caller's own grant rows |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` |
+| `edit_article` | `path, if_version, edits?, frontmatter?` | `wiki.write` | `write` |
 | `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; refused with `boundary_change` when anyone would gain access (§4.6) |
 | `archive_article` | `path, if_version` | `wiki.write` | `write` |
 | `unarchive_article` | `path, if_version?` | `wiki.write` | `write` |
@@ -1002,6 +1004,49 @@ Find articles by words in their title, description or tags, within everything th
 
 **Errors:** none at the tool level. An empty `hits` array is a valid result and does not distinguish "nothing matched" from "nothing you may see".
 
+### 10.3a `search_and_read` — `wiki.read` · `read` on each hit
+
+Search, then return the top hits' content in the same call — use when you'd otherwise search and then read the best result. Each read is checked exactly as `read_article`; links and moved pages come back as references, not followed.
+
+It is `search` (§10.3) followed by `read_article` (§10.5) on each of the top `k` hits, in search order, through the same handlers: no read is authorized, minted or audited any differently from a separate call, so a batch never returns what individual reads would refuse. Failures are per item — a missing `section` is a `404` for that item only. Content is held to `max_bytes` in total: the item that crosses it is cut on a character boundary and marked `truncated`; later items are not read and carry `skipped: "budget"` with their summary.
+
+```json
+// input
+{ "type": "object", "required": ["query"],
+  "properties": {
+    "query":     { "type": "string", "minLength": 1, "maxLength": 400 },
+    "prefix":    { "$ref": "#/$defs/folder_path",
+                   "description": "Restrict to this folder and everything beneath it." },
+    "k":         { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+    "section":   { "type": "string", "maxLength": 200,
+                   "description": "Read only the body under this heading, in every hit." },
+    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 100000, "default": 60000 } } }
+
+// output
+{ "type": "object", "required": ["results", "search_truncated"],
+  "properties": {
+    "results": { "type": "array", "items": {
+      "allOf": [ { "$ref": "#/$defs/article_summary" } ],
+      "properties": {
+        "score":          { "type": "number" },
+        "content":        { "type": "string" },
+        "version":        { "$ref": "#/$defs/version" },
+        "total_bytes":    { "type": "integer" },
+        "returned_bytes": { "type": "integer" },
+        "truncated":      { "type": "boolean" },
+        "reference": { "oneOf": [ { "$ref": "#/$defs/forward_reference" },
+                                  { "$ref": "#/$defs/link_reference" } ] },
+        "error":     { "type": "object", "required": ["status", "code"],
+                       "properties": { "status": { "type": "integer" },
+                                       "code":   { "type": "string" } } },
+        "skipped":   { "const": "budget" } } } },
+    "search_truncated": { "type": "boolean" } } }
+```
+
+Each item carries exactly one of `content` (with `version`, `total_bytes`, `returned_bytes`, `truncated`), `reference`, `error` or `skipped`.
+
+**Errors:** `400` for malformed arguments. Otherwise none at the tool level; an empty `results` array does not distinguish "nothing matched" from "nothing you may see".
+
 ### 10.4 `list_folder` — `wiki.read` · `read` on path
 
 Immediate contents of one folder — child folders by name, articles as summaries. Does not recurse. Archived articles and move pointers never appear. Links do, with `link_to`, and each local link carries `resolved` from one batched grant lookup — nothing is read at any target (§5.4).
@@ -1194,6 +1239,42 @@ Replace the body, and optionally the frontmatter, of an existing article. Requir
 
 **Errors:** `403` without `write`; `404` for no such path; `409` on a stale `if_version`, carrying `current_version` and the current body up to the response cap.
 
+### 10.10a `edit_article` — `wiki.write` · `write`
+
+Edit part of an article — replace exact text, append to the end or to a section, or change individual frontmatter fields — without resending the whole body. Prefer this over `update_article` for small changes. Put every change to one article in a single call (edits apply in order); edit different articles with parallel calls.
+
+The same sequence as `update_article` — grant check, `WRITE` credential for the exact key, read, compare `if_version`, `PutObject If-Match`, listing refresh — with the new body computed from `edits` instead of supplied whole. Edits apply in order, each to the result of the ones before. `old` is an exact substring and must match once unless `replace_all` is set. `append` adds the text on its own line at the end of the body, or with `section` at the end of that section (before the next heading of the same or higher level; matched as `read_article`'s `section`, headings in fenced code ignored). If any edit fails, **nothing is written**, and the `400` names the failing edit's index. `frontmatter` merges into the stored block at the top level; a key set to `null` is removed; `seq` is ignored; the result is validated exactly as `update_article`'s.
+
+```json
+// input
+{ "type": "object", "required": ["path", "if_version"],
+  "properties": {
+    "path":       { "$ref": "#/$defs/article_path" },
+    "if_version": { "$ref": "#/$defs/version" },
+    "edits": { "type": "array", "minItems": 1, "maxItems": 50,
+      "items": { "oneOf": [
+        { "type": "object", "required": ["old", "new"], "additionalProperties": false,
+          "properties": { "old": { "type": "string", "minLength": 1 },
+                          "new": { "type": "string" },
+                          "replace_all": { "type": "boolean", "default": false } } },
+        { "type": "object", "required": ["append"], "additionalProperties": false,
+          "properties": { "append":  { "type": "string", "minLength": 1 },
+                          "section": { "type": "string", "maxLength": 200 } } } ] } },
+    "frontmatter": { "type": "object", "additionalProperties": true,
+                     "description": "Fields merged into the stored block; null removes
+                       a field. At least one of edits and frontmatter is required." } } }
+
+// output
+{ "type": "object", "required": ["path", "version", "seq", "total_bytes"],
+  "properties": {
+    "path":        { "$ref": "#/$defs/article_path" },
+    "version":     { "$ref": "#/$defs/version" },
+    "seq":         { "type": "integer" },
+    "total_bytes": { "type": "integer", "description": "Byte length of the new body." } } }
+```
+
+**Errors:** `400` for a malformed or failing edit (naming its index), invalid merged frontmatter, or an article over 1 MiB; `403` without `write`; `404` for no such path, a pointer or a tombstone; `409` on a stale `if_version` (or a lost race at S3) carrying `current_version` and `edits_apply` — whether the same edits would succeed on the current body — and **no** `current_body`. If `edits_apply` is true, retry with `if_version = current_version`; otherwise read the article and redo the edits.
+
 ### 10.11 `move_article` — `wiki.write` · `write` on both
 
 Relocate an article, leaving a permanent forward pointer at the old path. **Returns who gains and who loses access.** Because grants are positional, a move re-evaluates readership in both directions — surface `access_changes` to the person before treating the move as done.
@@ -1315,6 +1396,8 @@ Errors are returned as MCP tool errors (`isError: true`) with `structuredContent
                    there is something to do." },
     "current_version": { "$ref": "#/$defs/version" },
     "current_body":    { "type": "string" },
+    "edits_apply":     { "type": "boolean",
+                         "description": "edit_article only, in place of current_body." },
     "retry_after":     { "type": "integer" } } }
 ```
 
@@ -1338,7 +1421,7 @@ Decided here rather than left open. Each is cheap to reverse before implementati
 | Paths cap at 512 characters | A `list` session policy carries the folder path twice and must stay under STS's 2 KB inline limit; 512 leaves headroom for any bucket name. Nobody has a 512-character path. |
 | Paths are lowercase, rejected rather than normalized | Case-sensitive paths over a case-insensitive-ish client surface produce articles that differ only in capitalisation. A schema rejection is visible to the agent; a silent rewrite is not. |
 | Article bodies cap at 1 MiB | Far above anything a person writes, far below anything that troubles the storage layer, and it makes "too large to read" a write-time error rather than a read-time surprise. |
-| `frontmatter` replaces rather than merges on update | Merge semantics make removing a tag impossible to express. Omit the field to leave it alone. |
+| `frontmatter` replaces rather than merges on update | Merge semantics make removing a tag impossible to express. Omit the field to leave it alone. `edit_article` merges instead, with `null` to remove a key, which is how it expresses removal. |
 | Archive is a written tombstone, not a delete marker | A delete marker has no actor and no `seq`, and removing it on unarchive erases the archive from history. One mechanism for archive and move; every event attributable. Cost: listings filter by `type` rather than getting it free from `ListObjectsV2`. |
 | Create at an archived path is refused | Continuing a chain should be a stated intention (`unarchive_article`), not a side effect of a create. The `409` carries the tombstone's version so it costs no extra call. |
 | `if_version` optional on unarchive | The tombstone's version is available from `list_versions` or the create `409`; supplying it guards a concurrent restore. Not required, because the common case is one person restoring one thing. |

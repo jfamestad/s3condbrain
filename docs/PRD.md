@@ -32,7 +32,7 @@ There is one kind of principal, a user; roles are positions in the tree, not cla
 | Subtree owner | Owns one folder (a persona namespace such as `/builder/`); grants within it, including `own` | Delegation bounded by the tree; grants that outlive them surface for review |
 | Writer | Holds `write` on a folder; works through an agent | Optimistic concurrency that fails without writing; clear 409/403/404 semantics |
 | Reader | Holds `read` on a folder or single article | Search that finds granted articles by path filter; history of the path |
-| Agent (Claude) | Acts for a signed-in user; inherits exactly that user's grants | Twelve tools, bounded responses, no way to change grants |
+| Agent (Claude) | Acts for a signed-in user; inherits exactly that user's grants | Fourteen tools, bounded responses, no way to change grants |
 | Household member | Non-technical; onboarded by invitation email | Magic-link sign-in, a one-screen connector setup on web or desktop, then phone use |
 
 **The reference persona set.** The first tree is a product decision register with three namespaces, each owned by one accountability: Investor (IDRs, the bets), Seller (MDRs, market and user decisions), Builder (ADRs, architecture), plus a root-level `escalations/` queue every persona can write to. The architecture commits to the pattern, not the trio: an organization brings its own personas by creating namespaces and owners (MDR-0002).
@@ -45,7 +45,7 @@ v1 is the server, the tool surface, the grant model and the admin web applicatio
 
 | In v1 | Deferred to v2 (specified, not built) | Out |
 | --- | --- | --- |
-| Twelve MCP tools over streamable HTTP at `/mcp` | Users outside the organization, and invitation onboarding | A human editing surface |
+| Fourteen MCP tools over streamable HTTP at `/mcp` | Users outside the organization, and invitation onboarding | A human editing surface |
 | WorkOS AuthKit as authorization server; substrate as pure resource server | Cross-instance references (`/a/` grammar adopted now) | git as the store |
 | Positional grants: `read`, `write`, `own`; folder cascade; additive union; no deny | Unattended agents, as an authenticated HTTP API beside `/mcp` | Multi-tenant SaaS (D7's multitenancy stays out; links compose one person's view of one instance) |
 | Immutable versions on S3; tombstone archive; pointer-first move | Bundle export (needs scoping and disclosure logging) | Federated identity or cross-instance token exchange |
@@ -59,13 +59,14 @@ v1 is the server, the tool surface, the grant model and the admin web applicatio
 
 ## Functional requirements
 
-Twelve tools, three permissions, two scopes. Every read is a search or a targeted fetch; an agent never walks the tree.
+Fourteen tools, three permissions, two scopes. Every read is a search or a targeted fetch; an agent never walks the tree.
 
 **Tool surface** (HANDOFF §10)
 
 | Tool | Arguments | Scope | Needs |
 | --- | --- | --- | --- |
 | `search` | `query, prefix?, limit?` | `wiki.read` | `read` on each hit |
+| `search_and_read` | `query, prefix?, k?, section?, max_bytes?` | `wiki.read` | `read` on each hit; each read checked as `read_article` |
 | `list_folder` | `path` | `wiki.read` | `read` on path (folder grants only) |
 | `read_article` | `path, section?, byte_range?` | `wiki.read` | `read` |
 | `resolve_reference` | `url` | none | none; parses a string |
@@ -74,6 +75,7 @@ Twelve tools, three permissions, two scopes. Every read is a search or a targete
 | `shared_with_me` | none | `wiki.read` | none; lists the caller's own grants |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` |
+| `edit_article` | `path, if_version, edits?, frontmatter?` | `wiki.write` | `write` |
 | `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; refused `boundary_change` if anyone gains access |
 | `archive_article` | `path, if_version` | `wiki.write` | `write` |
 | `unarchive_article` | `path, if_version?` | `wiki.write` | `write` |
@@ -195,7 +197,7 @@ The v1 substrate has no governing bet of its own; the nearest is IDR-0005 (Phase
 **Launch criteria for v1** (pass/fail, all verifiable by running something)
 
 1. The four WorkOS gate checks pass: metadata advertises CIMD and `none`; the resource indicator is registered; a PKCE round trip yields `aud` equal to the canonical URL; an unregistered resource is refused.
-2. All twelve tools answer correctly from Claude Code and claude.ai on a machine holding no AWS credentials.
+2. All fourteen tools answer correctly from Claude Code and claude.ai on a machine holding no AWS credentials.
 3. A write through the hosted path is attributed to the verified subject, and a client lying about identity in the request body is provably ignored.
 4. The pre-launch checklist (HANDOFF §12.8) passes end to end: route table, token rejections, storage answers to nothing but the storage role, zero-grant user mints nothing, no credentials in the repository, backup restore rehearsed, production errors reveal nothing.
 5. Measured revocation latency, token plus credential cache, ≤ 15 minutes end to end.

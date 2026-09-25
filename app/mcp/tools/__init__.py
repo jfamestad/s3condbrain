@@ -1,6 +1,6 @@
 """Tool registry. Each tool module exposes a module-level ``TOOL: Tool``.
 
-All twelve tools of HANDOFF §10, in the table's order. A module that is not yet
+All fourteen tools of HANDOFF §10, in the table's order. A module that is not yet
 implemented ships a placeholder whose handler returns a 500 envelope.
 """
 
