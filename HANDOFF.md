@@ -350,6 +350,17 @@ This buys something an internal id does not: **references survive.** A cross-ins
 >
 > The residual is the destination *path name*, which can carry information the article never did: `/legal/project-bluebird/` discloses by existing. That is a naming practice rather than a mechanism.
 
+### 5.4 Links
+
+A mount is a **link** (s3condbrain S7): an ordinary article with `type: link` and a `link_to` field, placed by a person in their own tree to point at a folder or article shared with them. Sharing only grants; the recipient decides whether and where to link. Because a link is not a reserved type, listings, search, history, move, archive and unarchive treat it like any other article.
+
+- **One hop.** `read_article` on a link returns one `link` reference and stops, as for a pointer. The server never follows a link and never resolves a path *through* one: `/me/racing.md/setup.md` is not a path.
+- **A link grants nothing.** The caller's next call is authorized against the target like any other; holding the link confers no access there.
+- **Links are visible.** Unlike pointers, links appear in `list_folder` and search. Publishing the target path to whoever can read the link's folder is intended.
+- **Creating one needs `write` on the containing folder,** the same as any `create_article`, and nothing on the target.
+- **Dead links stay.** When the caller no longer holds `read` on a local target, `list_folder` shows the link `resolved: false`. The server never removes it; the linker archives it.
+- **Targets.** `link_to` is a local article path, a local folder path, or a §7 reference `{root}/a/{article path}`. Folder references on other instances are not yet supported.
+
 ---
 
 ## 6. MCP protocol and transport
@@ -752,7 +763,7 @@ dev    https://wiki-dev.famestad.com/mcp
 
 ## 10. Tool contract
 
-Eleven tools. The `$defs` block is the data model in schema form — everything the server stores appears there first.
+Twelve tools. The `$defs` block is the data model in schema form — everything the server stores appears there first.
 
 | Tool | Arguments | Scope | Permission |
 | --- | --- | --- | --- |
@@ -762,6 +773,7 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
 | `resolve_reference` | `url` | — | — |
 | `list_versions` | `path, limit?, cursor?` | `wiki.read` | `read` on path |
 | `read_version` | `path, version_id, byte_range?` | `wiki.read` | `read` on path |
+| `shared_with_me` | — | `wiki.read` | none; the caller's own grant rows |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` |
 | `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; refused with `boundary_change` when anyone would gain access (§4.6) |
@@ -777,6 +789,8 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
 **Concurrency.** `version` is the object's ETag: opaque, returned by every read, required by every mutating call as `if_version`. Compare verbatim after stripping surrounding quotes; **never parse it**. The separate `seq` integer in frontmatter is for ordering and staleness reasoning, never for concurrency (§8.4).
 
 **Pointers.** A read that lands on a pointer returns one `forward_reference` and stops. The caller follows it with a fresh call. The server never walks a chain (§5.3).
+
+**Links.** A read that lands on a link returns one `link` reference and stops, exactly as for a pointer. A link grants nothing; the caller's next call is authorized against the target (§5.4).
 
 **Scopes.** `wiki.read` and `wiki.write`. Reading a path's version history falls under `wiki.read` and needs no separate permission — history lives at the path it belongs to, and the grant on that path governs it.
 
@@ -833,8 +847,11 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
   "properties": {
     "type":        { "type": "string",
                      "description": "OKF concept type. Starting vocabulary is
-                       'doc'. 'pointer' and 'archived' are server-written and
-                       rejected on input." },
+                       'doc'. 'link' marks a link (§5.4). 'pointer' and 'archived'
+                       are server-written and rejected on input." },
+    "link_to":     { "type": "string", "maxLength": 2048,
+                     "description": "Required on a link, rejected on anything else:
+                       a local article or folder path, or a §7 reference URL." },
     "title":       { "type": "string", "maxLength": 200 },
     "description": { "type": "string", "maxLength": 500,
                      "description": "One sentence. Shown in listings and search." },
@@ -890,7 +907,13 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
     "trust":       { "$ref": "#/$defs/trust" },
     "size_bytes":  { "type": "integer" },
     "seq":         { "type": "integer" },
-    "version":     { "$ref": "#/$defs/version" }
+    "version":     { "$ref": "#/$defs/version" },
+    "link_to":     { "type": "string",
+                     "description": "Links only: the target path or reference URL." },
+    "resolved":    { "type": "boolean",
+                     "description": "list_folder only, local links only: whether you
+                       hold read on the target right now (a grant check — the target
+                       may still not exist). Absent from search hits." }
   }
 },
 "version_entry": {
@@ -923,6 +946,21 @@ Eleven tools. The `$defs` block is the data model in schema form — everything 
   "description": "Returned in place of content when a path holds a pointer. Naming
     the destination is deliberate and safe: only a caller who could reach the old
     path can see this, and they could already read the article."
+},
+"link_reference": {
+  "type": "object",
+  "required": ["kind", "path", "link_to"],
+  "properties": {
+    "kind":    { "const": "link" },
+    "path":    { "$ref": "#/$defs/article_path" },
+    "link_to": { "type": "string", "maxLength": 2048,
+                 "description": "Target path (folder or article) on this instance,
+                   or an absolute reference URL on another." },
+    "note":    { "type": "string" }
+  },
+  "description": "Returned in place of content when the path holds a link. The server
+    does not follow it; the caller does, and that call is authorized against the
+    target."
 },
 "access_change": {
   "type": "object",
@@ -966,7 +1004,7 @@ Find articles by words in their title, description or tags, within everything th
 
 ### 10.4 `list_folder` — `wiki.read` · `read` on path
 
-Immediate contents of one folder — child folders by name, articles as summaries. Does not recurse. Archived articles and move pointers never appear.
+Immediate contents of one folder — child folders by name, articles as summaries. Does not recurse. Archived articles and move pointers never appear. Links do, with `link_to`, and each local link carries `resolved` from one batched grant lookup — nothing is read at any target (§5.4).
 
 ```json
 // input
@@ -986,7 +1024,7 @@ Immediate contents of one folder — child folders by name, articles as summarie
 
 ### 10.5 `read_article` — `wiki.read` · `read`
 
-Current live version of one article: frontmatter plus body. Returns a forward reference instead of content when the path holds a move pointer — **one hop**; the server does not follow it, the caller does, and the next read is authorized against the next path.
+Current live version of one article: frontmatter plus body. Returns a forward reference instead of content when the path holds a move pointer, and a `link` reference when it holds a link (§5.4) — **one hop**; the server does not follow either, the caller does, and the next read is authorized against the next path.
 
 ```json
 // input
@@ -1015,7 +1053,8 @@ Current live version of one article: frontmatter plus body. Returns a forward re
       "total_bytes":    { "type": "integer" },
       "returned_bytes": { "type": "integer" },
       "truncated":      { "type": "boolean" } } },
-  { "$ref": "#/$defs/forward_reference" } ] }
+  { "$ref": "#/$defs/forward_reference" },
+  { "$ref": "#/$defs/link_reference" } ] }
 ```
 
 **Errors:** `404` for no such path, an archived article, **or a path the caller lacks `read` on** — absence and denial are indistinguishable (§10.1).
@@ -1232,6 +1271,30 @@ Restore an archived article to listings. Writes a restoring version — the last
 ```
 
 **Errors:** `403` without `write`; `404` when the path was never used or is not archived.
+
+### 10.13a `shared_with_me` — `wiki.read` · none
+
+Every grant the caller holds: each folder or article shared with them, with the permission and who granted it. Use it to find shares to link into your own tree (`create_article` with `type: link`, §5.4). Reads the caller's own partition of the grant table and nothing else — no other subject's rows, no S3. A disabled person gets an empty list.
+
+```json
+// input
+{ "type": "object", "properties": {} }
+
+// output
+{ "type": "object", "required": ["grants"],
+  "properties": {
+    "grants": { "type": "array", "items": {
+      "type": "object",
+      "required": ["path", "permission", "folder", "granted_by", "granted_at"],
+      "properties": {
+        "path":       { "type": "string" },
+        "permission": { "enum": ["read", "write", "own"] },
+        "folder":     { "type": "boolean" },
+        "granted_by": { "type": "string" },
+        "granted_at": { "type": "string" } } } } } }
+```
+
+**Errors:** none at the tool level. An empty `grants` array is a valid result.
 
 ### 10.14 Error envelope
 

@@ -45,20 +45,21 @@ v1 is the server, the tool surface, the grant model and the admin web applicatio
 
 | In v1 | Deferred to v2 (specified, not built) | Out |
 | --- | --- | --- |
-| Eleven MCP tools over streamable HTTP at `/mcp` | Users outside the organization, and invitation onboarding | A human editing surface |
+| Twelve MCP tools over streamable HTTP at `/mcp` | Users outside the organization, and invitation onboarding | A human editing surface |
 | WorkOS AuthKit as authorization server; substrate as pure resource server | Cross-instance references (`/a/` grammar adopted now) | git as the store |
-| Positional grants: `read`, `write`, `own`; folder cascade; additive union; no deny | Unattended agents, as an authenticated HTTP API beside `/mcp` | Multi-tenant SaaS |
+| Positional grants: `read`, `write`, `own`; folder cascade; additive union; no deny | Unattended agents, as an authenticated HTTP API beside `/mcp` | Multi-tenant SaaS (D7's multitenancy stays out; links compose one person's view of one instance) |
 | Immutable versions on S3; tombstone archive; pointer-first move | Bundle export (needs scoping and disclosure logging) | Federated identity or cross-instance token exchange |
 | Admin web app: create people, grant, revoke, audit log, hard delete, confirm widening moves | Event streams (the 2026-07-28 revision made SSE optional) | Deny rules |
 | Audit log of every read, write, grant and denial | Full-text search (v1 matches metadata; the contract does not change) | A `history` permission |
 | Metadata search filtered by the caller's grants | Signed-in read-only web path for people who cannot add a connector | Seeding, templates, starter content |
 | Dev and prod stacks; hand-deployed certificate stack; `make deploy` | Custom AuthKit login domain (US$99/month) |  |
+| Mounts, delivered as links: a person places a `type: link` to anything shared with them in their own tree; one hop, grants nothing (S7) | |  |
 
 **Fixed limits.** Paths ≤ 512 characters, lowercase, no `.`/`..` segments, no `_`-prefixed segments; `index.md` and `log.md` reserved. Article bodies ≤ 1 MiB. Tool results bounded to Claude Code's 25,000-token budget; `search` returns snippets and paths, never bodies; `read_article` takes a section or byte range.
 
 ## Functional requirements
 
-Eleven tools, three permissions, two scopes. Every read is a search or a targeted fetch; an agent never walks the tree.
+Twelve tools, three permissions, two scopes. Every read is a search or a targeted fetch; an agent never walks the tree.
 
 **Tool surface** (HANDOFF §10)
 
@@ -70,6 +71,7 @@ Eleven tools, three permissions, two scopes. Every read is a search or a targete
 | `resolve_reference` | `url` | none | none; parses a string |
 | `list_versions` | `path, limit?, cursor?` | `wiki.read` | `read` on path |
 | `read_version` | `path, version_id, byte_range?` | `wiki.read` | `read` on path |
+| `shared_with_me` | none | `wiki.read` | none; lists the caller's own grants |
 | `create_article` | `path, content, frontmatter` | `wiki.write` | `write` on any ancestor |
 | `update_article` | `path, content, if_version, frontmatter?` | `wiki.write` | `write` |
 | `move_article` | `from, to, if_version` | `wiki.write` | `write` on both; refused `boundary_change` if anyone gains access |
@@ -193,7 +195,7 @@ The v1 substrate has no governing bet of its own; the nearest is IDR-0005 (Phase
 **Launch criteria for v1** (pass/fail, all verifiable by running something)
 
 1. The four WorkOS gate checks pass: metadata advertises CIMD and `none`; the resource indicator is registered; a PKCE round trip yields `aud` equal to the canonical URL; an unregistered resource is refused.
-2. All eleven tools answer correctly from Claude Code and claude.ai on a machine holding no AWS credentials.
+2. All twelve tools answer correctly from Claude Code and claude.ai on a machine holding no AWS credentials.
 3. A write through the hosted path is attributed to the verified subject, and a client lying about identity in the request body is provably ignored.
 4. The pre-launch checklist (HANDOFF §12.8) passes end to end: route table, token rejections, storage answers to nothing but the storage role, zero-grant user mints nothing, no credentials in the repository, backup restore rehearsed, production errors reveal nothing.
 5. Measured revocation latency, token plus credential cache, ≤ 15 minutes end to end.
