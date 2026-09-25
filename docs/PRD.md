@@ -32,7 +32,7 @@ There is one kind of principal, a user; roles are positions in the tree, not cla
 | Subtree owner | Owns one folder (a persona namespace such as `/builder/`); grants within it, including `own` | Delegation bounded by the tree; grants that outlive them surface for review |
 | Writer | Holds `write` on a folder; works through an agent | Optimistic concurrency that fails without writing; clear 409/403/404 semantics |
 | Reader | Holds `read` on a folder or single article | Search that finds granted articles by path filter; history of the path |
-| Agent (Claude) | Acts for a signed-in user; inherits exactly that user's grants | Nine tools, bounded responses, no way to change grants |
+| Agent (Claude) | Acts for a signed-in user; inherits exactly that user's grants | Twelve tools, bounded responses, no way to change grants |
 | Household member | Non-technical; onboarded by invitation email | Magic-link sign-in, a one-screen connector setup on web or desktop, then phone use |
 
 **The reference persona set.** The first tree is a product decision register with three namespaces, each owned by one accountability: Investor (IDRs, the bets), Seller (MDRs, market and user decisions), Builder (ADRs, architecture), plus a root-level `escalations/` queue every persona can write to. The architecture commits to the pattern, not the trio: an organization brings its own personas by creating namespaces and owners (MDR-0002).
